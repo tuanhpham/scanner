@@ -76,15 +76,19 @@ def enrich_float(syms: list[str], base: dict[str, dict]) -> int:
 
 # ---------------- Cham diem ----------------
 def _chg(u: dict, b: dict) -> tuple[float | None, float]:
-    """Tra ve (%thay doi dung nhat, do lech giua 2 nguon)."""
+    """Tra ve (%thay doi, do lech giua nguon va tinh tu prev_close).
+
+    Uu tien chg CUA NGUON: px va chg tu cung mot nguon luon tu nhat quan.
+    prev_close den tu nguon khac (yfinance) nen chi dung de doi chieu split.
+    """
     px, pc = u.get("px") or 0.0, b.get("prev_close") or 0.0
     src = u.get("chg")
     calc = (px / pc - 1.0) if (px and pc) else None
-    if calc is None:
-        return src, 0.0
     if src is None:
         return calc, 0.0
-    return calc, abs(calc - src)
+    if calc is None:
+        return src, 0.0
+    return src, abs(calc - src)
 
 
 def score_one(u: dict, b: dict, frac: float) -> dict:
@@ -140,6 +144,7 @@ def rank(universe: dict[str, dict], base: dict[str, dict] | None = None,
     mso = ck.mso()
     smin = ck.session_minutes() or 390
     frac = session_frac(st, mso, smin)
+    intraday = st in ("OPENING", "LIVE", "CLOSING")
 
     rej: dict = {"_state": st, "_frac": round(frac, 4)}
 
@@ -170,7 +175,7 @@ def rank(universe: dict[str, dict], base: dict[str, dict] | None = None,
         if rv < MIN_RVOL:
             no(f"rvol < {MIN_RVOL}")
             continue
-        if diverge > SPLIT_DIVERGE:
+        if intraday and diverge > SPLIT_DIVERGE:
             no("nghi ngo gop/chia co phieu (chg lech nguon)")
             continue
         pre.append((sym, u, rv))
