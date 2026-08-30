@@ -194,6 +194,12 @@ async def loop_clock(st: State, n, ck: SessionClock, dry: bool) -> None:
             if state == "PREMARKET" and "hb" not in st.done:
                 st.done.add("hb")
                 lo, lc = ck.local_open(), ck.local_close()
+                if lo is None or lc is None:
+                    log("heartbeat: bo qua, clock chua co gio phien")
+                    st.done.discard("hb")
+                    await asyncio.sleep(20)
+                    continue
+
                 skew = ck.dst_skew()
                 warn = "\n⚠️ <i>DST lech: phien mo som 1 gio</i>" if skew == 5 else ""
                 half = " (NUA PHIEN)" if ck.is_half() else ""
@@ -240,8 +246,25 @@ async def run(dry: bool, once: bool) -> None:
         for h in hits[:5]:
             log(f"  {h['sym']:<6} {h['score']:>5.1f}  rvol {h['rvol']:.1f}x")
         if hits and not dry:
-            await n.send(fmt(hits[0], "NEW", ck), loud=True)
+            h = hits[0]
+            await n.send(fmt(h, "NEW", ck), loud=True)
             await n.q.join()
+            now = dt.datetime.now(dt.timezone.utc)
+            con = db()
+            con.execute(
+                "INSERT INTO alerts(ts_utc,ts_et,kind,sym,score,px,chg,rvol,"
+                "atr_move,float_rot,dollar_vol,freshness,sources)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (now.isoformat(timespec="seconds"),
+                 now.astimezone(ZoneInfo("America/New_York")).isoformat(
+                     timespec="seconds"),
+                 "ONCE", h["sym"], h["score"], h["px"], h["chg"], h["rvol"],
+                 h["atr_move"], h["float_rot"], h["dollar_vol"],
+                 h["freshness"], ",".join(h["sources"])))
+            con.commit()
+            con.close()
+            log(f"da gui + luu DB: {h['sym']} score={h['score']:.1f} "
+                f"| tg sent={n.sent} failed={n.failed}")
         for t in tasks:
             t.cancel()
         return
@@ -252,6 +275,8 @@ async def run(dry: bool, once: bool) -> None:
         asyncio.create_task(loop_score(st, n, ck, dry)),
     ]
     await asyncio.gather(*tasks)
+    db().close()   # tao bang alerts ngay tu dau, ke ca khi chay --once
+
 
 
 if __name__ == "__main__":
