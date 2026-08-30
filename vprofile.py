@@ -41,6 +41,30 @@ def rvol(volume_today: float, adv20: float, mso: int | float | None,
         return 0.0
     return float(volume_today) / expected
 
+PREMKT_FRAC = 0.03   # premarket ~3% khoi luong ca ngay
+
+
+def session_frac(state: str, mso: int | float | None,
+                 session_minutes: int = FULL_SESSION) -> float:
+    """Ty le khoi luong ky vong, CO XET trang thai phien.
+
+    Trong phien   -> duong cong U theo mso.
+    Premarket     -> hang so nho.
+    Dong cua/AH   -> 1.0, vi volume nhan duoc la CA PHIEN da hoan tat.
+    """
+    if state in ("OPENING", "LIVE", "CLOSING"):
+        return cum_frac(mso, session_minutes)
+    if state in ("PREP", "PREMARKET"):
+        return PREMKT_FRAC
+    return 1.0
+
+
+def rvol_at(volume_today: float, adv20: float, frac: float) -> float:
+    """RVOL khi da biet truoc `frac` - dung thay cho rvol() trong scorer."""
+    if not adv20 or adv20 <= 0:
+        return 0.0
+    exp = adv20 * max(frac, FLOOR)
+    return float(volume_today) / exp if exp > 0 else 0.0
 
 if __name__ == "__main__":
     print(f"{'mso':>5} {'cum_frac':>9}   vi du: vol=5M, adv20=1M -> rvol")

@@ -13,6 +13,7 @@ import sqlite3
 import sys
 import time
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import yfinance as yf
@@ -78,8 +79,21 @@ def fetch_universe() -> list[str]:
 
 
 # ---------------- 3. Tinh chi so tu daily bars ----------------
+ET_TZ = ZoneInfo("America/New_York")
+
+
 def compute(df: pd.DataFrame) -> dict | None:
     df = df.dropna(subset=["Close", "Volume"])
+    # Bo bar cua ngay hom nay: neu prep chay giua phien, bar do chua ket thuc
+    # -> prev_close se bang gia hien tai -> chg va atr_move = 0 tren toan bo DB.
+    try:
+        today_et = dt.datetime.now(dt.timezone.utc).astimezone(ET_TZ).date()
+        idx = pd.DatetimeIndex(df.index)
+        if idx.tz is not None:
+            idx = idx.tz_convert(ET_TZ).tz_localize(None)
+        df = df[idx.date < today_et]
+    except Exception:  # noqa: BLE001
+        pass
     if len(df) < 25:
         return None
     adv20 = float(df["Volume"].tail(20).mean())
@@ -91,6 +105,7 @@ def compute(df: pd.DataFrame) -> dict | None:
     if adv20 < MIN_ADV or prev_close < MIN_PRICE or atr14 <= 0:
         return None
     return {"adv20": adv20, "atr14": atr14, "prev_close": prev_close}
+
 
 
 def download_batch(syms: list[str]) -> dict[str, pd.DataFrame]:
