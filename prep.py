@@ -87,11 +87,16 @@ def compute(df: pd.DataFrame) -> dict | None:
     # Bo bar cua ngay hom nay: neu prep chay giua phien, bar do chua ket thuc
     # -> prev_close se bang gia hien tai -> chg va atr_move = 0 tren toan bo DB.
     try:
-        today_et = dt.datetime.now(dt.timezone.utc).astimezone(ET_TZ).date()
-        idx = pd.DatetimeIndex(df.index)
-        if idx.tz is not None:
-            idx = idx.tz_convert(ET_TZ).tz_localize(None)
-        df = df[idx.date < today_et]
+        now_et = dt.datetime.now(dt.timezone.utc).astimezone(ET_TZ)
+        today_et = now_et.date()
+        # Chi bo bar hom nay khi phien CHUA dong (truoc 16:00 ET, ngay thuong).
+        # Sau 16:00 ET bar da chot -> giu lai, vi do chinh la prev_close cho mai.
+        market_still_open = now_et.weekday() < 5 and now_et.hour < 16
+        if market_still_open:
+            idx = pd.DatetimeIndex(df.index)
+            if idx.tz is not None:
+                idx = idx.tz_convert(ET_TZ).tz_localize(None)
+            df = df[idx.date < today_et]
     except Exception:  # noqa: BLE001
         pass
     if len(df) < 25:
