@@ -427,3 +427,12 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# Python / scanner
+.venv/
+__pycache__/
+*.pyc
+.env
+state/*.db
+state/*.log
+state/*.json
