@@ -58,6 +58,24 @@ class State:
 def log(msg: str) -> None:
     print(f"[{dt.datetime.now(DE):%H:%M:%S}] {msg}", flush=True)
 
+def restore_today(st) -> int:
+    """Nap lai cac ma da alert hom nay tu DB -> restart giua phien khong bao trung."""
+    if st.day is None:
+        return 0
+    try:
+        con = db()
+        rows = con.execute(
+            "SELECT sym, MAX(score), COUNT(*) FROM alerts "
+            "WHERE substr(ts_et,1,10)=? GROUP BY sym",
+            (st.day.isoformat(),)).fetchall()
+        con.close()
+    except Exception as e:  # noqa: BLE001
+        log(f"restore_today loi: {e}")
+        return 0
+    for sym, best, cnt in rows:
+        st.seen[sym] = {"best": float(best), "alerts": int(cnt)}
+        st.n_alerts += int(cnt)
+    return len(rows)
 
 def db() -> sqlite3.Connection:
     con = sqlite3.connect(DB)
@@ -188,6 +206,10 @@ async def loop_clock(st: State, n, ck: SessionClock, dry: bool) -> None:
                 st.errors = 0
                 st.base = await asyncio.to_thread(scorer.load_baseline)
                 log(f"=== ngay moi {st.day} | baseline {len(st.base)} ma ===")
+                k = restore_today(st)
+                if k:
+                    log(f"khoi phuc {k} ma da alert hom nay ({st.n_alerts} alert)")
+
 
             state = ck.state()
 
@@ -211,7 +233,7 @@ async def loop_clock(st: State, n, ck: SessionClock, dry: bool) -> None:
                         f"{warn}", loud=False)
                 log(f"heartbeat: phien {lo:%H:%M}-{lc:%H:%M} DE")
 
-            if state == "AFTERHOURS" and "sum" not in st.done:
+            if state == "AFTERHOURS" and "sum" not in st.done and st.scans > 0:
                 st.done.add("sum")
                 top = sorted(st.seen.items(), key=lambda kv: -kv[1]["best"])[:8]
                 body = "\n".join(
