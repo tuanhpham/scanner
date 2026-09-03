@@ -100,6 +100,12 @@ def fmt(h: dict, kind: str, ck: SessionClock) -> str:
     mso = ck.mso()
     fresh = ("🟢 realtime" if h["freshness"] == "REALTIME"
              else "🟡 tre ~15 phut")
+    sec = ""
+    try:
+        sec = esc(edgar.line(h["sym"]))
+    except Exception:  # noqa: BLE001
+        sec = ""
+
     lines = [
         f"{icon} <b>${esc(h['sym'])}</b>  {chg:+.1f}%  ${h['px']:.2f}"
         f"   <code>score {h['score']:.1f}</code>",
@@ -107,6 +113,8 @@ def fmt(h: dict, kind: str, ck: SessionClock) -> str:
         f"float {flt} (quay {h['float_rot']:.2f}x)",
         f"KL ${h['dollar_vol'] / 1e6:.0f}M · phut {mso} cua phien · {fresh}",
         f"<i>{esc(h['explain'])}</i>",
+        "",
+        *([f"<i>{sec}</i>", ""] if sec else []),
         "",
         f"<a href=\"https://finviz.com/quote.ashx?t={h['sym']}\">Finviz</a> · "
         f"<a href=\"https://stockanalysis.com/stocks/{h['sym']}/\">Analysis</a>"
