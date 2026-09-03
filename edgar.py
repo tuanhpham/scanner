@@ -202,7 +202,7 @@ def line(sym: str) -> str:
     a = assess(sym)
     if a["n"] == 0:
         return "SEC: khong tra duoc ho so"
-    head = f"SEC: {label(a['risk'])}"
+    head = f"SEC: {label(a["risk"], a.get("earn", False))}"
     return head + ("\n" + "\n".join("· " + f for f in a["flags"][:3])
                    if a["flags"] else "")
 
@@ -210,7 +210,7 @@ def line(sym: str) -> str:
 def _demo(syms: list[str]) -> None:
     for s in syms:
         a = assess(s)
-        print(f"\n=== {s} ===  risk={a['risk']}  {label(a['risk'])}")
+        print(f"\n=== {s} ===  risk={a['risk']}  {label(a["risk"], a.get("earn", False))}")
         if a["n"] == 0:
             print("   ", a.get("note", ""))
             continue
