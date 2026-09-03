@@ -21,6 +21,8 @@ import universe_live
 from clock import DE, SessionClock
 from notifier import esc
 
+import edgar
+
 ROOT = Path(__file__).resolve().parent
 DB = ROOT / "state" / "baseline.db"
 
