@@ -145,10 +145,11 @@ def assess(sym: str) -> dict:
     """Cham diem rui ro tu ho so SEC. Duong = nguy hiem, am = tich cuc."""
     fs = filings(sym)
     if not fs:
-        return {"sym": sym, "risk": 0.0, "flags": [], "n": 0,
+        return {"sym": sym, "risk": 0.0, "flags": [], "n": 0, "earn": False,
                 "note": "khong co ho so / thieu CIK"}
     risk = 0.0
     flags: list[str] = []
+    earn = False
     for f in fs:
         grp, w, desc = FORMS[f["form"]]
         fresh = f["age"] <= HOT_DAYS
@@ -156,10 +157,14 @@ def assess(sym: str) -> dict:
             risk += w if fresh else w * 0.3
             if fresh:
                 flags.append(f"{f['form']} {f['age']}d truoc - {desc}")
+            else:
+                flags.append(f"{f['form']} {f['age']}d truoc - {desc} (cu)")
         elif grp == "SAN_SANG":
             risk += w if f["age"] <= 30 else w * 0.4
             if f["age"] <= 30:
                 flags.append(f"{f['form']} {f['age']}d truoc - {desc}")
+            else:
+                flags.append(f"{f['form']} {f['age']}d truoc - {desc} (cu)")
         elif grp == "XAU":
             risk += w if fresh else w * 0.5
             flags.append(f"{f['form']} {f['age']}d truoc - {desc}")
@@ -168,6 +173,8 @@ def assess(sym: str) -> dict:
             flags.append(f"{f['form']} {f['age']}d truoc - {desc}")
         elif grp == "TIN" and fresh:
             codes = [c.strip() for c in f["items"].split(",") if c.strip()]
+            if "2.02" in codes:
+                earn = True
             named = [ITEMS[c] for c in codes if c in ITEMS]
             risk += sum(ITEM_RISK.get(c, 0.0) for c in codes)
             if named:
@@ -175,16 +182,18 @@ def assess(sym: str) -> dict:
             else:
                 flags.append(f"8-K {f['age']}d truoc")
     return {"sym": sym, "risk": round(risk, 1), "flags": flags[:6],
-            "n": len(fs), "top": fs[0] if fs else None}
+            "n": len(fs), "top": fs[0] if fs else None, "earn": earn}
 
 
-def label(risk: float) -> str:
+def label(risk: float, earn: bool = False) -> str:
     if risk >= 3.0:
         return "🔴 RUI RO PHA LOANG CAO"
     if risk >= 1.5:
         return "🟠 co ke hoach phat hanh"
     if risk <= -0.5:
         return "🟢 co dong lon gom hang"
+    if earn:
+        return "🔵 vua bao cao KQKD"
     return "⚪ khong thay tin hieu dac biet"
 
 
