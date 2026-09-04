@@ -184,9 +184,17 @@ def assess(sym: str) -> dict:
                 flags.append(f"8-K {f['age']}d trước - " + "; ".join(named))
             else:
                 flags.append(f"8-K {f['age']}d trước")
+    cnt = Counter(f["form"] for f in fs)
+    detail, seen = [], set()
+    for f in fs:                       # fs đã sắp mới nhất trước
+        if f["form"] in seen:
+            continue
+        seen.add(f["form"])
+        detail.append({"form": f["form"], "age": f["age"],
+                       "desc": FORMS[f["form"]][2], "n": cnt[f["form"]]})
     return {"sym": sym, "risk": round(risk, 1), "flags": flags[:6],
-            "n": len(fs), "top": fs[0] if fs else None, "earn": earn}
-
+            "n": len(fs), "top": fs[0] if fs else None,
+            "earn": earn, "detail": detail[:5]}
 
 def label(risk: float, earn: bool = False) -> str:
     if risk >= 3.0:

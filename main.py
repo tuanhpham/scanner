@@ -22,6 +22,7 @@ from clock import DE, SessionClock
 from notifier import esc
 
 import edgar
+import render
 
 ROOT = Path(__file__).resolve().parent
 DB = ROOT / "state" / "baseline.db"
@@ -106,51 +107,21 @@ def loud_mode(score: float) -> bool:
 
 
 def fmt(h: dict, kind: str, ck: SessionClock) -> str:
-    bar = "🟥" if h["score"] >= 12 else "🟧" if h["score"] >= 9 else "🟨"
-    tag = {"NEW": "TÍN HIỆU MỚI", "UP": "TĂNG ĐIỂM"}.get(kind, "CẬP NHẬT")
-    chg = (h["chg"] or 0) * 100
-    mso = ck.mso()
-    fresh = ("🟢 thời gian thực" if h["freshness"] == "REALTIME"
-             else "🟡 trễ ~15 phút")
-
-    dv = h.get("dollar_vol") or 0
-    rot = h.get("float_rot") or 0
-    flt = f"{h['float_sh'] / 1e6:.1f} triệu CP" if h.get("float_sh") else "không rõ"
-
-    L = [
-        f"{bar} <b>${esc(h['sym'])}</b>  <b>{chg:+.1f}%</b>  ${h['px']:.2f}",
-        f"<i>{tag}</i> · điểm <b>{h['score']:.1f}</b> · phút {mso}/390 · {fresh}",
-        "",
-        "<pre>"
-        f"RVOL      {h['rvol']:>8.1f}×\n"
-        f"Biên độ   {h['atr_move']:>8.1f}× ATR\n"
-        f"Giá trị   {dv / 1e6:>8.0f} triệu $\n"
-        f"Quay vòng {rot:>8.2f}×"
-        "</pre>",
-        f"Lưu hành tự do: {flt}",
-    ]
-
     try:
-        sec = edgar.block(h["sym"])
+        sec = edgar.assess(h["sym"])
     except Exception:  # noqa: BLE001
-        sec = []
-    if sec:
-        L += ["", "📄 <b>Hồ sơ SEC</b>",
-              "<blockquote>" + "\n".join(esc(x) for x in sec) + "</blockquote>"]
-
-    L += [
-        "",
-        f"<i>{esc(h['explain'])}</i>",
-        "",
-        f"<a href=\"https://finviz.com/quote.ashx?t={h['sym']}\">Finviz</a> · "
-        f"<a href=\"https://stockanalysis.com/stocks/{h['sym']}/\">Phân tích</a>"
-        + (f" · <a href=\"https://www.sec.gov/cgi-bin/browse-edgar?"
-           f"action=getcompany&amp;CIK={h['cik']}&amp;type=8-K&amp;dateb=&amp;"
-           f"owner=include&amp;count=10\">EDGAR</a>" if h.get("cik") else ""),
-        "",
-        "⚠️ <i>Dữ liệu thô, chưa kiểm chứng. Tự xác minh trước khi quyết định.</i>",
-    ]
-    return "\n".join(L)
+        sec = None
+    upd = ""
+    try:
+        upd = ck.now_et(dt.datetime.now(dt.timezone.utc)).strftime("%H:%M")
+    except Exception:  # noqa: BLE001
+        try:
+            upd = ck.now_et().strftime("%H:%M")
+        except Exception:  # noqa: BLE001
+            upd = ""
+    v = render.AlertView.from_scan(h, sec=sec, kind=kind,
+                                   updated=upd, mso=ck.mso())
+    return render.render_alert(v)
 
 # ---------------- cac vong lap ----------------
 async def loop_universe(st: State, ck: SessionClock) -> None:
