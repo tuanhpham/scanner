@@ -7,7 +7,7 @@ SAMPLE = {
     "rvol": 66.2, "atr_move": 4.1, "dollar_vol": 311e6,
     "float_sh": 8.4e6, "float_rot": 3.49, "freshness": "REALTIME",
     "cik": "0001941158", "sec_risk": 4.0,
-    "explain": "rvol 66.2x(+2.0) · atr 4.1x(+1.5) · quay vong 3.49x(+1.2)",
+    "explain": "rvol 66.2x(+2.0) · atr 4.1x(+1.5) · quay vòng 3.49x(+1.2)",
 }
 
 
