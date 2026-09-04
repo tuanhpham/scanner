@@ -2,7 +2,7 @@
 
 Bot chạy 24/7, tự bật/tắt theo lịch phiên NYSE. Trong phiên, cứ **25 giây** nó
 quét toàn bộ cổ phiếu đang chạy mạnh, chấm điểm bất thường, và bắn alert vào
-Telegram kèm nút bấm (biểu đồ, hồ sơ SEC, cập nhật lại, watchlist).
+Telegram kèm nút bấm (biểu đồ, hồ sơ SEC, cập nhật lại, theo dõi, hỏi ChatGPT).
 
 Mọi thứ dùng **API miễn phí**: Alpaca, Yahoo Finance, SEC EDGAR, Nasdaq Trader.
 
@@ -46,7 +46,7 @@ So số liệu live với baseline → chấm điểm → vượt ngưỡng thì
                                 │
                                 ▼  state/baseline.db
    ┌─────────────────────────────────────────────────────────────┐
-   │  CHẠY LIÊN TỤC — main.py: 4 vòng lặp async song song        │
+   │  CHẠY LIÊN TỤC — main.py: 5 vòng lặp async song song        │
    │                                                             │
    │  ① loop_clock   (20s)  clock.py — bây giờ là trạng thái gì? │
    │     PREP → PREMARKET → OPENING → LIVE → CLOSING →           │
@@ -64,7 +64,11 @@ So số liệu live với baseline → chấm điểm → vượt ngưỡng thì
    │                          →  tgapi.py gửi kèm nút bấm        │
    │                          →  ghi vào bảng `alerts`           │
    │                                                             │
-   │  ④ Callbacks    (long-poll)  callbacks.py                   │
+   │  ④ loop_track   (45s)  chỉ các mã bạn đã bấm "Theo dõi"     │
+   │     Chấm điểm lại (bỏ qua bộ lọc) → sửa lại chính tin nhắn  │
+   │     alert của mã đó. Không gửi tin mới.                     │
+   │                                                             │
+   │  ⑤ Callbacks    (long-poll)  callbacks.py                   │
    │     Nghe nút bấm → chấm điểm lại → sửa tin nhắn tại chỗ     │
    └─────────────────────────────────────────────────────────────┘
 ```
@@ -376,9 +380,9 @@ nguồn realtime · quét 15:42 ET · điểm trước 9.8
 
 Dữ liệu thô, chưa kiểm chứng · Không phải lời khuyên đầu tư   ← FOOT
 
-[Biểu đồ]   [Finviz]     [Tin]
-[Cập nhật]  [Chi tiết]
-[Hồ sơ SEC] [Theo dõi]   [Watchlist]
+[Biểu đồ]   [Finviz]    [Tin]
+[Cập nhật]  [Chi tiết]  [Hỏi ChatGPT]
+[Hồ sơ SEC] [Theo dõi]
 ```
 
 ### Quy ước trình bày
@@ -406,10 +410,10 @@ Xử lý bởi `callbacks.py`, sửa tin nhắn tại chỗ (không gửi tin m�
 
 | Nút | Việc gì xảy ra |
 |---|---|
-| Cập nhật | Chấm điểm lại mã đó ngay, sửa tin nhắn. Cooldown 8s |
-| Chi tiết | Mở/thu gọn khối `VÌ SAO` (breakdown điểm số) |
-| Theo dõi | Lưu vào bảng `watch` kind=`track`. Chỉ hiện từ mức 2 |
-| Watchlist | Lưu vào bảng `watch` kind=`wl`. Chỉ hiện từ mức 2 |
+| Cập nhật | Chấm điểm lại mã đó ngay, sửa tin nhắn tại chỗ. Cooldown 8s/mã |
+| Chi tiết | Mở/thu gọn khối `VÌ SAO`. Cũng chấm điểm lại, nên cùng chịu cooldown 8s |
+| Theo dõi | Bật chế độ tự cập nhật cho mã đó — xem dưới. Chỉ hiện từ mức 2 |
+| Hỏi ChatGPT | Mở ChatGPT với prompt đã điền sẵn số liệu của mã — xem dưới |
 | Biểu đồ · Finviz · Tin · Hồ sơ SEC | Link ngoài: TradingView, Finviz, Google News, EDGAR |
 
 Số ở cột phải panel (`+12.4`) là **delta so với lần gửi trước** — snapshot lưu
@@ -417,13 +421,94 @@ trong bảng `alert_msg`, so sánh trong `render._delta()`. Chưa có snapshot t
 cột để trống; thay đổi quá nhỏ thì hiện `=`. Cột này cũng là ASCII, vì nằm
 trong `<pre>`.
 
+### Nút Cập nhật — giới hạn cần biết
+
+Nó gọi `main.refresh_one()` → `scorer.score_sym()` → `tgapi.edit()`, tức là
+sửa chính tin nhắn cũ, không gửi tin mới. Hai điều đáng lưu ý:
+
+- **Dữ liệu mới nhất chỉ tươi tới 60 giây.** `st.universe` do `loop_universe`
+  dựng lại mỗi `UNIVERSE_SEC = 60` (Yahoo giới hạn ~1 req/60s). Bấm hai lần
+  trong vòng 60s sẽ ra cùng `vol`/`px`; chỉ `frac` (và do đó RVOL) nhích lên
+  vì phiên đã đi thêm được vài phút.
+- Nó dùng `scorer.score_sym()` chứ **không** phải `scorer.rank()`. `rank()` áp
+  bộ lọc (`MIN_RVOL`, `MIN_CHG`…) nên mã đã nguội sẽ bị loại và trả về rỗng —
+  khi đó tin nhắn sẽ rơi về snapshot cũ thay vì cho bạn thấy điểm đã tụt.
+  Chính "điểm tụt từ 9.8 xuống 4.1" mới là thông tin bạn cần.
+
+Nếu mã đã rời hẳn universe (hết phiên, hoặc không còn chạy) thì `refresh_one`
+trả `None` và `callbacks._rerender` dựng lại tin từ snapshot trong DB, gắn nhãn
+`Trễ ~15 phút`.
+
+### Nút Theo dõi
+
+Bật cho một mã (chỉ hiện từ mức 2), rồi ba việc xảy ra:
+
+1. **Tin nhắn của mã đó tự sửa lại mỗi `TRACK_SEC = 45` giây** — do
+   `main.loop_track()`. Giá, RVOL, quay vòng, giờ cập nhật đều đổi ngay trong
+   tin nhắn cũ; header ghi `Đang theo dõi · tự cập nhật`. Không gửi tin mới,
+   nên không làm ồn.
+2. **Ngưỡng gửi lại hạ từ `ESCALATE_DELTA = 3.0` xuống `TRACK_ESCALATE = 1.5`**
+   — mã đang theo dõi mạnh lên thì bot báo sớm hơn.
+3. **Không bị trần `MAX_ALERTS = 45` chặn** — hết quota alert cả phiên thì mã
+   đang theo dõi vẫn gửi được.
+
+Chi tiết cần biết:
+
+- **Chỉ có hiệu lực trong phiên.** `store.prune_track()` xoá mọi dòng cũ hơn
+  18 giờ, chạy lúc sang ngày mới. Dùng tuổi thay vì "xoá khi khởi động" để bot
+  restart giữa phiên không mất danh sách.
+- **Trần `MAX_TRACK = 10` mã.** `tgapi` có `MIN_GAP = 1.2s` giữa hai lần gọi
+  API, nên 10 mã đã chiếm 12s trong mỗi vòng 45s. Vượt trần thì chỉ 10 mã mới
+  nhất được cập nhật, và log ghi rõ số bị bỏ.
+- Vòng tự cập nhật **không ghi lại snapshot**, nên cột delta trong panel vẫn đo
+  từ lần *gửi* thật gần nhất, không bị reset về `=` sau mỗi 45 giây.
+- Mã đang theo dõi được đánh dấu `(theo doi)` trong tin tổng kết cuối phiên.
+- Nếu bạn đã bấm Thu gọn ở một mã mức 3, lần tự cập nhật sau sẽ mở lại khối
+  `VÌ SAO` — trạng thái thu gọn không được lưu vào DB.
+
+### Nút Hỏi ChatGPT
+
+Là một link thường (`url` button) tới `https://chatgpt.com/?q=<prompt>`, với
+prompt do `render.ask_prompt()` dựng từ số liệu của mã:
+
+```
+Cổ phiếu Mỹ WETO hôm nay tăng 85.5% lên $10.61, khối lượng gấp 66 lần bình
+thường, biên độ 4.1 lần ATR, float 8.4M cp, quay vòng 3.5 lần float, giá trị
+giao dịch $311M. Hồ sơ SEC gần đây: 424B5 cách 2 ngày; 8-K cách 1 ngày; S-3
+cách 46 ngày. 1) Vì sao nó tăng — có tin/thông báo nào hôm nay? 2) Rủi ro pha
+loãng và thanh khoản ra sao? 3) Đây là đợt tăng có cơ sở hay chỉ là bơm giá?
+Trả lời ngắn bằng tiếng Việt, dẫn nguồn.
+```
+
+Đặt `CHATGPT_GPT_ID` trong `.env` để mở **một GPT riêng** thay vì ChatGPT
+thường (lấy ID từ URL của GPT đó: `chatgpt.com/g/g-abc123-ten` →
+`g-abc123-ten`). Khi đó URL thành `chatgpt.com/g/g-abc123-ten?q=…`.
+
+**Bốn giới hạn, cần biết trước khi tin vào nút này:**
+
+- Tham số `?q=` **không có trong tài liệu công khai của OpenAI**. Nó vẫn hoạt
+  động, nhưng hành vi đã đổi vài lần (có lúc điền sẵn rồi tự gửi, có lúc chỉ
+  điền vào ô nhập). OpenAI có thể bỏ nó bất cứ lúc nào — không có gì bảo đảm.
+- **Telegram mở link trong trình duyệt nội bộ của nó**, nên mặc định bạn sẽ
+  thấy ChatGPT bản web chứ không phải app. Muốn nó mở đúng app: tắt in-app
+  browser trong Telegram (Settings → Data and Storage), khi đó link đi ra
+  trình duyệt hệ thống và universal link/app link sẽ chuyển sang app ChatGPT
+  nếu đã cài.
+- Chưa đăng nhập ChatGPT thì nó ra trang login, prompt mất.
+- Prompt bị cắt ở `ASK_MAX = 700` ký tự. Mỗi chữ tiếng Việt có dấu thành 9 byte
+  sau khi URL-encode, nên URL thực tế dài ~1100 ký tự. `python render.py` in ra
+  độ dài URL và cảnh báo nếu vượt 2000.
+
+Prompt **cố tình không chứa điểm số hay xếp loại của bot** — đó là thang điểm
+riêng của project này, ChatGPT không có cách nào hiểu `12.4/12` nghĩa là gì.
+
 ---
 
 ## 7. Bản đồ file
 
 | File | Việc |
 |---|---|
-| `main.py` | Vòng lặp chính, 4 task async, ngưỡng alert, ghi bảng `alerts` |
+| `main.py` | Vòng lặp chính, 5 task async, ngưỡng alert, ghi bảng `alerts` |
 | `prep.py` | Dựng baseline hàng ngày: adv20, atr14, prev_close, cik |
 | `clock.py` | Lịch phiên NYSE → giờ Đức. Xử lý DST lệch, nửa phiên, ngày lễ |
 | `universe_live.py` | Gộp Alpaca + Yahoo screener → dict các mã đang chạy |
@@ -460,7 +545,7 @@ Có hai module gửi tin, và điều này là cố ý:
 | `meta` | `prep.py` | Cặp key-value: `built`, `count`, `etf_marked` |
 | `alerts` | `main.py` | Lịch sử alert đã gửi. Dùng cho `restore_today()` |
 | `alert_msg` | `store.py` | `sym`+`day` → `message_id` + snapshot (để tính delta) |
-| `watch` | `store.py` | Danh sách theo dõi / watchlist |
+| `watch` | `store.py` | Mã đang theo dõi trong phiên (`kind='track'`) |
 | `kv` | `store.py` | Hiện chỉ giữ `tg_offset` của `getUpdates` |
 
 DB bật WAL nên nhiều tiến trình đọc/ghi cùng lúc không sao.
@@ -526,6 +611,10 @@ ESCALATE_DELTA = 3.0    # gửi lại khi điểm tăng thêm bao nhiêu
 COOLDOWN = 540          # giây, mỗi mã
 MAX_ALERTS = 45         # trần mỗi phiên
 SCORE_SEC = 25          # tần số quét
+
+TRACK_SEC = 45          # nút Theo dõi: tự sửa lại tin nhắn mỗi bao lâu
+TRACK_ESCALATE = 1.5    # ngưỡng gửi lại cho mã đang theo dõi (nhạy hơn)
+MAX_TRACK = 10          # trần số mã theo dõi cùng lúc, xem mục 6
 ```
 
 **`scorer.py`** — trọng số và bộ lọc
@@ -543,6 +632,7 @@ SCORE_MAX, BAR_CELLS = 12.0, 10        # thang của thanh điểm
 W_IND, W_LAB, W_VAL, W_DLT = 2, 11, 8, 6   # 4 cột trong panel <pre>
 SAFE_LEN = 3800           # vượt ngưỡng này thì bỏ bớt khối
 EXPANDABLE = True         # <blockquote expandable>, cần Bot API >= 7.3
+ASK_MAX = 700             # độ dài prompt của nút Hỏi ChatGPT
 ```
 
 Chữ hiển thị nằm gọn trong dict `TXT` ở đầu `render.py` — sửa tên nhãn, tên

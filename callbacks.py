@@ -26,6 +26,14 @@ class Callbacks:
         self.log = log
         self._last_rf: dict[str, float] = {}
 
+    def _cool(self, sym: str) -> bool:
+        """True = duoc phep cham diem lai. Chan spam cho ca Refresh va Chi tiet."""
+        now = time.time()
+        if now - self._last_rf.get(sym, 0) < RF_COOLDOWN:
+            return False
+        self._last_rf[sym] = now
+        return True
+
     async def run(self) -> None:
         off = int(store.get_kv(self.db, "tg_offset", "0") or 0)
         fails = 0
@@ -57,20 +65,25 @@ class Callbacks:
             await tgapi.answer_cb(cid, "Nut da het hieu luc")
             return
         try:
-            if act in ("trk", "wl"):
-                store.set_watch(self.db, sym,
-                                "track" if act == "trk" else "wl", arg == "1")
-                await tgapi.answer_cb(cid, "Da luu" if arg == "1" else "Da bo")
+            if act == "trk":
+                on = arg == "1"
+                store.set_track(self.db, sym, on)
+                await tgapi.answer_cb(
+                    cid, f"Dang theo doi {sym}, tin nhan se tu cap nhat"
+                    if on else f"Da bo theo doi {sym}")
                 await self._rerender(sym, mid, markup_only=True)
             elif act == "dtl":
+                # Cung an RF_COOLDOWN: nut nay cung cham diem lai (goi
+                # scorer), khong the de bam lien tuc khong gioi han.
+                if not self._cool(sym):
+                    await tgapi.answer_cb(cid, "Cham thoi, doi 8 giay")
+                    return
                 await tgapi.answer_cb(cid)
                 await self._rerender(sym, mid, detail=(arg == "1"))
             elif act == "rf":
-                now = time.time()
-                if now - self._last_rf.get(sym, 0) < RF_COOLDOWN:
+                if not self._cool(sym):
                     await tgapi.answer_cb(cid, "Vua cap nhat roi")
                     return
-                self._last_rf[sym] = now
                 await tgapi.answer_cb(cid, "Dang cap nhat...")
                 await self._rerender(sym, mid, refresh=True)
             else:

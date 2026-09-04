@@ -4,7 +4,7 @@ Ghi vao state/baseline.db (da bat WAL) trong 3 bang rieng, khong dinh
 gi toi bang `base` cua prep.py hay bang `alerts` cua main.py.
 
   alert_msg  sym + ngay -> message_id + so lieu lan truoc (de tinh delta)
-  watch      danh sach theo doi / watchlist
+  watch      danh sach ma dang theo doi trong phien (kind='track')
   kv         cap khoa-gia tri, hien dung cho tg_offset cua getUpdates
 
 Moi ham deu bat loi va tra ve gia tri mac dinh: DB phu nay hong thi
@@ -121,43 +121,63 @@ def purge_msg(db, keep_days: int = 7) -> int:
         return 0
 
 
-# ───────────────────────── watch ─────────────────────────
-def set_watch(db, sym: str, kind: str, on: bool) -> None:
-    """kind: 'track' (theo doi trong phien) hoac 'wl' (watchlist)."""
+# ───────────────────────── watch (chi con kind='track') ─────────────────────
+# Cot `kind` giu lai de DB cu khong phai migrate. Chi ghi 'track'; dong 'wl'
+# cua ban truoc nam im va bi prune_track() don theo tuoi.
+KIND = "track"
+
+
+def set_track(db, sym: str, on: bool) -> None:
+    """Bat/tat theo doi mot ma. Theo doi chi co hieu luc trong phien."""
     try:
         with closing(_con(db)) as c, c:
             if on:
                 c.execute("INSERT OR REPLACE INTO watch(sym,kind,ts) "
-                          "VALUES(?,?,?)", (sym, kind, _now()))
+                          "VALUES(?,?,?)", (sym, KIND, _now()))
             else:
                 c.execute("DELETE FROM watch WHERE sym=? AND kind=?",
-                          (sym, kind))
+                          (sym, KIND))
     except Exception as e:                                       # noqa: BLE001
-        log(f"store.set_watch {sym}: {type(e).__name__}: {e}")
+        log(f"store.set_track {sym}: {type(e).__name__}: {e}")
 
 
-def watch_state(db, sym: str) -> tuple[bool, bool]:
-    """(tracked, watched) — dung de dat nhan cho hai nut."""
+def is_tracked(db, sym: str) -> bool:
     try:
         with closing(_con(db)) as c:
-            rows = {r[0] for r in c.execute(
-                "SELECT kind FROM watch WHERE sym=?", (sym,))}
+            return c.execute("SELECT 1 FROM watch WHERE sym=? AND kind=?",
+                             (sym, KIND)).fetchone() is not None
     except Exception as e:                                       # noqa: BLE001
-        log(f"store.watch_state {sym}: {type(e).__name__}: {e}")
-        return False, False
-    return "track" in rows, "wl" in rows
+        log(f"store.is_tracked {sym}: {type(e).__name__}: {e}")
+        return False
 
 
-def watch_list(db, kind: str = "wl") -> list[str]:
+def tracked_syms(db) -> list[str]:
     """Danh sach ma dang theo doi, moi nhat truoc."""
     try:
         with closing(_con(db)) as c:
             return [r[0] for r in c.execute(
                 "SELECT sym FROM watch WHERE kind=? ORDER BY ts DESC",
-                (kind,))]
+                (KIND,))]
     except Exception as e:                                       # noqa: BLE001
-        log(f"store.watch_list: {type(e).__name__}: {e}")
+        log(f"store.tracked_syms: {type(e).__name__}: {e}")
         return []
+
+
+def prune_track(db, max_age_h: int = 18) -> int:
+    """Xoa moi dong watch cu hon max_age_h gio.
+
+    Theo doi la viec cua MOT phien. Dung tuoi thay vi mo ngay vi bot co the
+    restart giua phien - neu xoa moi lan khoi dong thi mat het danh sach.
+    18 gio du de qua mot dem (16:00 ET -> 09:30 ET hom sau la 17.5 gio).
+    """
+    cut = (dt.datetime.now(dt.timezone.utc)
+           - dt.timedelta(hours=max_age_h)).isoformat(timespec="seconds")
+    try:
+        with closing(_con(db)) as c, c:
+            return c.execute("DELETE FROM watch WHERE ts < ?", (cut,)).rowcount
+    except Exception as e:                                       # noqa: BLE001
+        log(f"store.prune_track: {type(e).__name__}: {e}")
+        return 0
 
 
 # ───────────────────────── kv ─────────────────────────
@@ -188,9 +208,10 @@ if __name__ == "__main__":
     print("get_msg :", get_msg(d, "_TEST"))
     put_snap(d, "_TEST", {"score": 9.1, "rvol": 70.0})
     print("get_snap:", get_snap(d, "_TEST"))
-    set_watch(d, "_TEST", "wl", True)
-    print("watch   :", watch_state(d, "_TEST"), watch_list(d))
-    set_watch(d, "_TEST", "wl", False)
+    set_track(d, "_TEST", True)
+    print("track   :", is_tracked(d, "_TEST"), tracked_syms(d))
+    set_track(d, "_TEST", False)
+    print("bo track:", is_tracked(d, "_TEST"))
     set_kv(d, "_test_kv", 42)
     print("kv      :", get_kv(d, "_test_kv"))
     with closing(_con(d)) as c, c:

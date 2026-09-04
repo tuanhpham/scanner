@@ -36,6 +36,11 @@ ALERT_SCORE = 7.0
 ESCALATE_DELTA = 3.0   # diem tang thap nay -> gui lai
 COOLDOWN = 540         # 9 phut moi ma
 MAX_ALERTS = 45        # tran moi phien, chong spam
+
+# --- Nut "Theo doi" ---
+TRACK_SEC = 45         # tu sua lai tin nhan cua ma dang theo doi
+TRACK_ESCALATE = 1.5   # nguong gui lai, nhay hon ESCALATE_DELTA thuong
+MAX_TRACK = 10         # tgapi co MIN_GAP 1.2s -> 10 ma = 12s moi vong
 SEC_RISK_MAX = 3.0     # risk >= nguong nay -> tru diem
 SEC_PENALTY = 2.0
 MIN_MSO = 5            # bo qua alert trong 5 phut dau phien
@@ -131,8 +136,12 @@ def session_state(ck: SessionClock | None) -> str:
 
 
 def build_view(h: dict, kind: str, ck: SessionClock | None = None,
-               detail: bool = False) -> render.AlertView:
-    """Dict tu scorer -> AlertView day du (SEC, delta, watchlist)."""
+               detail: bool | None = None) -> render.AlertView:
+    """Dict tu scorer -> AlertView day du (SEC, delta, trang thai theo doi).
+
+    detail=None nghia la "tu quyet": muc 3 mo san khoi VI SAO, muc 1-2 dong.
+    Callbacks truyen True/False tuong minh khi nguoi dung bam nut Chi tiet.
+    """
     ck = ck or _CK
     try:
         sec = edgar.assess(h["sym"])
@@ -146,16 +155,18 @@ def build_view(h: dict, kind: str, ck: SessionClock | None = None,
     except Exception:  # noqa: BLE001
         pass
     try:
-        tracked, watched = store.watch_state(DB, h["sym"])
+        tracked = store.is_tracked(DB, h["sym"])
         prev = store.get_snap(DB, h["sym"])
     except Exception as e:  # noqa: BLE001
         log(f"store doc loi {h['sym']}: {e}")
-        tracked, watched, prev = False, False, None
-    return render.AlertView.from_scan(
+        tracked, prev = False, None
+    v = render.AlertView.from_scan(
         h, sec=sec, prev=prev, kind=kind, session=session_state(ck),
-        updated=upd, mso=mso, session_min=smin, detail=detail,
-        tracked=tracked, watched=watched,
+        updated=upd, mso=mso, session_min=smin, detail=False,
+        tracked=tracked,
         news_url=f"https://www.google.com/search?q={h['sym']}+stock&tbm=nws")
+    v.detail = (v.level == 3) if detail is None else bool(detail)
+    return v
 
 
 def fmt(h: dict, kind: str, ck: SessionClock) -> str:
@@ -188,14 +199,21 @@ async def tg_send(n, v: render.AlertView, loud: bool) -> bool:
 
 
 async def refresh_one(sym: str) -> dict | None:
-    """Cham diem lai mot ma khi nguoi dung bam Refresh."""
+    """Cham diem lai mot ma khi nguoi dung bam Cap nhat.
+
+    Dung score_sym chu khong phai rank(): rank() ap bo loc nen ma da nguoi
+    se tra ve rong -> tin nhan roi ve snapshot cu. Ma nguoi van phai xem
+    duoc diem moi cua no.
+
+    Luu y: st.universe chi lam moi moi UNIVERSE_SEC (60s), nen bam hai lan
+    trong vong 60s se ra cung vol/px - chi frac (va do RVOL) nhich len.
+    """
     if _ST is None or _CK is None:
         return None
     row = (_ST.universe or {}).get(sym)
     if row is None:
         return None                      # ngoai phien / khong con trong universe
-    hits, _ = await asyncio.to_thread(scorer.rank, {sym: row}, _ST.base, _CK)
-    return hits[0] if hits else None
+    return await asyncio.to_thread(scorer.score_sym, sym, row, _ST.base, _CK)
 
 
 # ---------------- cac vong lap ----------------
@@ -224,6 +242,7 @@ async def loop_score(st: State, n, ck: SessionClock, dry: bool) -> None:
                 st.scans += 1
                 now = dt.datetime.now(dt.timezone.utc)
                 et = ck.now_et(now)
+                trk = set(store.tracked_syms(DB))
 
                 for h in hits:
                     if h["score"] < ALERT_SCORE:
@@ -236,9 +255,12 @@ async def loop_score(st: State, n, ck: SessionClock, dry: bool) -> None:
                     if _m is not None and _m < MIN_MSO:
                         continue
                     prev = st.seen.get(sym)
+                    # Ma dang theo doi: nguong gui lai thap hon -> bot bao
+                    # som hon khi no manh len.
+                    delta = TRACK_ESCALATE if sym in trk else ESCALATE_DELTA
                     if prev is None:
                         kind = "NEW"
-                    elif h["score"] >= prev["best"] + ESCALATE_DELTA:
+                    elif h["score"] >= prev["best"] + delta:
                         kind = "UP"
                     else:
                         st.seen[sym]["best"] = max(prev["best"], h["score"])
@@ -257,7 +279,8 @@ async def loop_score(st: State, n, ck: SessionClock, dry: bool) -> None:
                                 continue
                     except Exception:  # noqa: BLE001
                         h["sec_risk"] = None
-                    if st.n_alerts >= MAX_ALERTS:
+                    # Ma dang theo doi khong bi tran MAX_ALERTS chan lai.
+                    if st.n_alerts >= MAX_ALERTS and sym not in trk:
                         continue
 
                     st.seen[sym] = {"best": h["score"],
@@ -291,6 +314,42 @@ async def loop_score(st: State, n, ck: SessionClock, dry: bool) -> None:
         await asyncio.sleep(SCORE_SEC)
 
 
+async def loop_track(st: State, ck: SessionClock, dry: bool) -> None:
+    """Ma dang theo doi: tu sua lai chinh tin nhan alert cua no moi TRACK_SEC.
+
+    Khong gui tin moi (viec do de loop_score lam khi diem tang), va KHONG ghi
+    lai snapshot - nho vay cot delta trong panel van do tu lan gui that gan
+    nhat, thay vi bi reset ve 0 sau moi lan tu cap nhat.
+    """
+    while True:
+        await asyncio.sleep(TRACK_SEC)
+        if dry or not ck.scanning() or not st.universe:
+            continue
+        syms = store.tracked_syms(DB)
+        if len(syms) > MAX_TRACK:
+            log(f"theo doi: {len(syms)} ma vuot tran, chi cap nhat "
+                f"{MAX_TRACK} ma moi nhat")
+            syms = syms[:MAX_TRACK]
+        for sym in syms:
+            try:
+                mid, _ = store.get_msg(DB, sym)
+                if not mid:
+                    continue          # chua tung gui alert -> khong co gi de sua
+                row = st.universe.get(sym)
+                if row is None:
+                    continue          # roi khoi universe, khong co gia moi
+                h = await asyncio.to_thread(
+                    scorer.score_sym, sym, row, st.base, ck)
+                if not h:
+                    continue
+                v = build_view(h, "TRK", ck)
+                if not await tgapi.edit(mid, render.render_alert(v),
+                                        render.render_keyboard(v)):
+                    log(f"theo doi {sym}: sua tin that bai")
+            except Exception as e:  # noqa: BLE001
+                log(f"theo doi {sym}: {type(e).__name__}: {e}")
+
+
 async def loop_clock(st: State, n, ck: SessionClock, dry: bool) -> None:
     while True:
         try:
@@ -308,6 +367,10 @@ async def loop_clock(st: State, n, ck: SessionClock, dry: bool) -> None:
                 k = restore_today(st)
                 if k:
                     log(f"khoi phuc {k} ma da alert hom nay ({st.n_alerts} alert)")
+                # Theo doi chi co hieu luc trong phien. Dung tuoi thay vi
+                # "xoa het luc khoi dong" de restart giua phien khong mat list.
+                if (p := store.prune_track(DB)):
+                    log(f"don {p} ma theo doi cua phien truoc")
 
             state = ck.state()
 
@@ -334,8 +397,14 @@ async def loop_clock(st: State, n, ck: SessionClock, dry: bool) -> None:
             if state == "AFTERHOURS" and "sum" not in st.done and st.scans > 0:
                 st.done.add("sum")
                 top = sorted(st.seen.items(), key=lambda kv: -kv[1]["best"])[:8]
+                trk = set(store.tracked_syms(DB))
                 body = "\n".join(
-                    f"${esc(s)}  score {v['best']:.1f}" for s, v in top) or "—"
+                    f"${esc(s)}  score {v['best']:.1f}"
+                    + ("  (theo doi)" if s in trk else "")
+                    for s, v in top) or "—"
+                if (extra := sorted(trk - {s for s, _ in top})):
+                    body += ("\n\nDang theo doi: "
+                             + " ".join("$" + esc(s) for s in extra))
                 if not dry:
                     await n.send(
                         f"📋 <b>Ket phien {st.day:%d/%m}</b>\n"
@@ -401,10 +470,13 @@ async def run(dry: bool, once: bool) -> None:
         asyncio.create_task(loop_score(st, n, ck, dry)),
     ]
     if not dry:
-        tasks.append(asyncio.create_task(Callbacks(
-            DB, refresh_one,
-            lambda h, kind, detail: build_view(h, kind, None, detail),
-            log=log).run()))
+        tasks += [
+            asyncio.create_task(loop_track(st, ck, dry)),
+            asyncio.create_task(Callbacks(
+                DB, refresh_one,
+                lambda h, kind, detail: build_view(h, kind, None, detail),
+                log=log).run()),
+        ]
     await asyncio.gather(*tasks)
 
 

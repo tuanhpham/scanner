@@ -36,6 +36,8 @@ Khong con dong link chu o cuoi: inline keyboard da co san cac nut do.
 from __future__ import annotations
 
 import html
+import os
+import urllib.parse
 from dataclasses import dataclass
 from typing import Any
 
@@ -54,6 +56,12 @@ MICRO_PRICE = 1.50
 SAFE_LEN    = 3800        # Telegram cung 4096
 EXPANDABLE  = True        # <blockquote expandable> can Bot API >= 7.3
 
+# Nut "Hoi ChatGPT": mo ChatGPT voi prompt da dien san qua tham so ?q=.
+# Dat CHATGPT_GPT_ID trong .env (vd "g-abc123...") de mo mot GPT rieng thay
+# vi ChatGPT thuong. Xem README muc 6 ve gioi han cua cach nay.
+CHATGPT_GPT_ID = os.getenv("CHATGPT_GPT_ID", "").strip()
+ASK_MAX = 700             # do dai prompt truoc khi encode; URL dai de bi cat
+
 # Do rong cot trong panel <pre>. Tat ca nhan phai la ASCII va <= W_LAB.
 W_IND, W_LAB, W_VAL, W_DLT = 2, 11, 8, 6
 
@@ -66,6 +74,7 @@ TXT = {
     "ico1": "🟡", "ico2": "🟠", "ico3": "🔴",
     # loai tin
     "new": "Tín hiệu mới", "up": "Tăng điểm", "upd": "Cập nhật",
+    "trk": "Đang theo dõi · tự cập nhật",
     # trang thai du lieu (ngoai panel -> duoc dung dau)
     "live": "Realtime", "delayed": "Trễ ~15 phút",
     "pre": "Trước phiên", "post": "Sau phiên", "closed": "Đã đóng phiên",
@@ -100,8 +109,8 @@ TXT = {
     # nhan nut — chu tran, khong emoji
     "k_chart": "Biểu đồ", "k_fviz": "Finviz", "k_sec": "Hồ sơ SEC",
     "k_news": "Tin", "k_more": "Chi tiết", "k_less": "Thu gọn",
-    "k_ref": "Cập nhật", "k_track": "Theo dõi", "k_untrack": "Bỏ theo dõi",
-    "k_wl": "Watchlist", "k_wl_on": "Đã lưu",
+    "k_ref": "Cập nhật", "k_track": "Theo dõi", "k_untrack": "Đang theo dõi",
+    "k_ask": "Hỏi ChatGPT",
 }
 
 CB_VER = "a1"
@@ -193,7 +202,6 @@ class AlertView:
     prev: dict | None = None
     detail: bool = False
     tracked: bool = False
-    watched: bool = False
     news_url: str | None = None
 
     @classmethod
@@ -202,7 +210,6 @@ class AlertView:
                   session: str = "LIVE", updated: str = "",
                   mso: int | None = None, session_min: int = 390,
                   detail: bool = False, tracked: bool = False,
-                  watched: bool = False,
                   news_url: str | None = None) -> "AlertView":
         return cls(
             sym=h["sym"], px=float(h.get("px") or 0),
@@ -215,7 +222,7 @@ class AlertView:
             mso=mso, session_min=session_min or 390,
             explain=h.get("explain") or "", cik=h.get("cik"),
             sec=sec, prev=prev, detail=detail, tracked=tracked,
-            watched=watched, news_url=news_url)
+            news_url=news_url)
 
     def snapshot(self) -> dict:
         return {"score": self.score, "rvol": self.rvol,
@@ -408,6 +415,49 @@ def edgar_url(cik: str | None) -> str | None:
             f"&CIK={cik}&type=8-K&dateb=&owner=include&count=20")
 
 
+def ask_prompt(v: AlertView) -> str:
+    """Prompt gui sang ChatGPT: dua san so lieu, hoi dung 3 cau.
+
+    Ngan gon la bat buoc - prompt di trong URL, moi chu tieng Viet co dau
+    thanh 9 byte sau khi encode. Khong dua nhan dinh cua bot vao (diem so,
+    xep loai) vi day la thang diem rieng, ChatGPT khong hieu duoc.
+    """
+    f = []
+    if v.rvol:
+        f.append(f"khối lượng gấp {v.rvol:.0f} lần bình thường")
+    if v.atr_move:
+        f.append(f"biên độ {v.atr_move:.1f} lần ATR")
+    if v.float_sh:
+        f.append(f"float {v.float_sh / 1e6:.1f}M cp")
+    if v.float_rot:
+        f.append(f"quay vòng {v.float_rot:.1f} lần float")
+    if v.dollar_vol:
+        f.append(f"giá trị giao dịch {_money(v.dollar_vol)}")
+
+    move = (f"tăng {v.chg:.1f}% lên" if v.chg >= 0
+            else f"giảm {abs(v.chg):.1f}% về")
+    p = [f"Cổ phiếu Mỹ {v.sym} hôm nay {move} ${v.px:.2f}"
+         f"{', ' + ', '.join(f) if f else ''}."]
+    if (d := (v.sec or {}).get("detail")):
+        p.append("Hồ sơ SEC gần đây: "
+                 + "; ".join(f"{x['form']} cách {x['age']} ngày" for x in d[:3])
+                 + ".")
+    p.append("1) Vì sao nó tăng — có tin/thông báo nào hôm nay? "
+             "2) Rủi ro pha loãng và thanh khoản ra sao? "
+             "3) Đây là đợt tăng có cơ sở hay chỉ là bơm giá? "
+             "Trả lời ngắn bằng tiếng Việt, dẫn nguồn.")
+    return " ".join(p)[:ASK_MAX]
+
+
+def ask_url(v: AlertView) -> str:
+    base = "https://chatgpt.com/"
+    if CHATGPT_GPT_ID:
+        gid = CHATGPT_GPT_ID if CHATGPT_GPT_ID.startswith("g-") \
+            else f"g-{CHATGPT_GPT_ID}"
+        base += f"g/{gid}"
+    return f"{base}?q={urllib.parse.quote(ask_prompt(v))}"
+
+
 # ───────────────────────── HEADER ─────────────────────────
 def _status(v: AlertView) -> str:
     """Do tuoi du lieu + thoi diem + vi tri trong phien."""
@@ -431,7 +481,8 @@ def _status(v: AlertView) -> str:
 def _kind_label(v: AlertView) -> str:
     if v.kind == "UP" and (p := v.prev or {}).get("score"):
         return f"{TXT['up']} +{v.score - p['score']:.1f}"
-    return {"NEW": TXT["new"], "UP": TXT["up"]}.get(v.kind, TXT["upd"])
+    return {"NEW": TXT["new"], "UP": TXT["up"],
+            "TRK": TXT["trk"]}.get(v.kind, TXT["upd"])
 
 
 def render_header(v: AlertView) -> list[str]:
@@ -457,7 +508,10 @@ def _blocks(v: AlertView) -> list[tuple[int, list[str]]]:
         out.append((P_RISK, r))
     if v.level >= 2 or v.sec_risk >= SEC_MID:
         out.append((P_SEC, render_sec(v)))
-    if v.detail or v.level == 3:
+    # Chi dua vao v.detail. Truoc day co "or v.level == 3" nen o muc 3 khoi
+    # WHY luon hien -> nut "Thu gon" bam ma khong thu gon duoc gi. Viec bat
+    # san detail cho muc 3 giao cho main.build_view (detail=None = tu quyet).
+    if v.detail:
         out.append((P_WHY, render_why(v)))
     foot = TXT["foot_raw"] if v.freshness == "REALTIME" else TXT["foot_part"]
     out.append((P_FOOT, [f"<i>{foot}</i>"]))
@@ -516,7 +570,8 @@ def render_keyboard(v: AlertView) -> dict:
     rows.append([
         {"text": TXT["k_ref"], "callback_data": cb("rf", v.sym)},
         {"text": TXT["k_less"] if v.detail else TXT["k_more"],
-         "callback_data": cb("dtl", v.sym, "0" if v.detail else "1")}])
+         "callback_data": cb("dtl", v.sym, "0" if v.detail else "1")},
+        {"text": TXT["k_ask"], "url": ask_url(v)}])
 
     row = []
     if (eu := edgar_url(v.cik)):
@@ -525,9 +580,6 @@ def render_keyboard(v: AlertView) -> dict:
         row.append({"text": TXT["k_untrack"] if v.tracked else TXT["k_track"],
                     "callback_data": cb("trk", v.sym,
                                         "0" if v.tracked else "1")})
-        row.append({"text": TXT["k_wl_on"] if v.watched else TXT["k_wl"],
-                    "callback_data": cb("wl", v.sym,
-                                        "0" if v.watched else "1")})
     if row:
         rows.append(row)
     return {"inline_keyboard": rows}
@@ -587,6 +639,7 @@ if __name__ == "__main__":
         v = AlertView.from_scan(h, sec=sec, prev=prev, kind="NEW",
                                 session="LIVE", updated="15:42", mso=12,
                                 news_url="https://example.com")
+        v.detail = v.level == 3          # main.build_view lam viec nay
         txt = render_alert(v)
         print("\n" + "=" * 64)
         print(f"{title}  ->  level {v.level}, {len(txt)} ky tu")
@@ -606,3 +659,19 @@ if __name__ == "__main__":
             bad |= {c for c in blk if ord(c) > 127}
     print("ky tu ngoai ASCII trong panel <pre>:",
           " ".join(sorted(bad)) if bad else "khong co -> OK")
+
+    # Nut Chi tiet: phai bat/tat duoc khoi WHY o CA hai muc.
+    for sc, tag in ((12.4, "L3"), (8.3, "L2")):
+        sec = _DEMO_SEC if sc > 10 else {"risk": 0.0, "n": 2, "detail": []}
+        for d in (False, True):
+            v = AlertView.from_scan({**_DEMO, "score": sc}, sec=sec, detail=d)
+            print(f"nut Chi tiet {tag} detail={d!s:<5} -> khoi WHY hien:",
+                  TXT["h_why"] in render_alert(v))
+
+    # URL nut ChatGPT: URL qua dai se bi trinh duyet/Telegram cat.
+    v = AlertView.from_scan(_DEMO, sec=_DEMO_SEC)
+    u = ask_url(v)
+    print(f"\nURL ChatGPT: {len(u)} ky tu"
+          f" ({'OK' if len(u) < 2000 else 'QUA DAI'})"
+          f"{' | GPT rieng: ' + CHATGPT_GPT_ID if CHATGPT_GPT_ID else ''}")
+    print("prompt:", ask_prompt(v))

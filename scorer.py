@@ -137,6 +137,28 @@ def score_one(u: dict, b: dict, frac: float) -> dict:
     }
 
 
+def score_sym(sym: str, u: dict, base: dict[str, dict],
+              clock: SessionClock | None = None) -> dict | None:
+    """Cham diem MOT ma, BO QUA toan bo bo loc cua rank().
+
+    rank() loai bo ma khong dat nguong (rvol < 3, tang < 5%...). Nhung nut
+    Cap nhat va vong theo doi lai CAN xem duoc ma da nguoi - dung ra thi
+    "diem tut tu 9.8 xuong 4.1" moi la thong tin quan trong. Neu goi rank()
+    o day thi ma nguoi se tra ve rong va ta chi con snapshot cu de hien.
+
+    None = khong co baseline cho ma nay (ETF / moi len san).
+    """
+    b = base.get(sym)
+    if not b:
+        return None
+    ck = clock or SessionClock()
+    try:
+        frac = session_frac(ck.state(), ck.mso(), ck.session_minutes() or 390)
+    except Exception:  # noqa: BLE001
+        frac = 1.0
+    return score_one({**u, "sym": sym}, b, frac)
+
+
 def rank(universe: dict[str, dict], base: dict[str, dict] | None = None,
          clock: SessionClock | None = None) -> tuple[list[dict], dict]:
     base = base if base is not None else load_baseline()
