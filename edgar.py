@@ -33,36 +33,36 @@ SHELF_DAYS = 120   # shelf con hieu luc
 
 # Phan loai form -> (nhom, trong so rui ro, mo ta)
 FORMS = {
-    "424B5": ("BAN_NGAY", 3.0, "dang chao ban co phieu (shelf takedown)"),
-    "424B4": ("BAN_NGAY", 3.0, "dang chao ban co phieu"),
+    "424B5": ("BAN_NGAY", 3.0, "đang chào bán cổ phiếu (shelf takedown)"),
+    "424B4": ("BAN_NGAY", 3.0, "đang chào bán cổ phiếu"),
     "424B3": ("BAN_NGAY", 2.0, "cao bach bo sung"),
     "424B2": ("BAN_NGAY", 2.0, "cao bach bo sung"),
-    "FWP":   ("BAN_NGAY", 1.5, "tai lieu chao ban tu do"),
-    "S-3":     ("SAN_SANG", 1.5, "dang ky ke hang - co the ban bat cu luc nao"),
-    "S-3ASR":  ("SAN_SANG", 1.5, "dang ky ke hang tu dong hieu luc"),
-    "S-1":     ("SAN_SANG", 1.5, "dang ky phat hanh"),
-    "S-1/A":   ("SAN_SANG", 1.0, "sua dang ky phat hanh"),
-    "EFFECT":  ("SAN_SANG", 1.0, "dang ky da co hieu luc"),
-    "8-K":  ("TIN", 0.0, "tin trong yeu"),
-    "6-K":  ("TIN", 0.0, "tin trong yeu (cty nuoc ngoai)"),
-    "SC 13D":   ("GOM_HANG", -1.0, "co dong >5% co y dinh tac dong"),
-    "SC 13D/A": ("GOM_HANG", -0.5, "cap nhat co dong >5%"),
-    "SC 13G":   ("GOM_HANG", -0.5, "co dong >5% thu dong"),
-    "25-NSE":  ("XAU", 3.0, "thong bao huy niem yet"),
-    "NT 10-K": ("XAU", 2.0, "nop bao cao nam tre"),
-    "NT 10-Q": ("XAU", 1.5, "nop bao cao quy tre"),
+    "FWP":   ("BAN_NGAY", 1.5, "tài liệu chào bán tự do"),
+    "S-3":     ("SAN_SANG", 1.5, "đăng ký kê hàng - có thể bán bất cứ lúc nào"),
+    "S-3ASR":  ("SAN_SANG", 1.5, "đăng ký kê hàng tự động hiệu lực"),
+    "S-1":     ("SAN_SANG", 1.5, "đăng ký phát hành"),
+    "S-1/A":   ("SAN_SANG", 1.0, "sửa đăng ký phát hành"),
+    "EFFECT":  ("SAN_SANG", 1.0, "đăng ký đã có hiệu lực"),
+    "8-K":  ("TIN", 0.0, "tin trọng yếu"),
+    "6-K":  ("TIN", 0.0, "tin trọng yếu (công ty nước ngoài)"),
+    "SC 13D":   ("GOM_HANG", -1.0, "cổ đông >5% có ý định tác động"),
+    "SC 13D/A": ("GOM_HANG", -0.5, "cập nhật cổ đông >5%"),
+    "SC 13G":   ("GOM_HANG", -0.5, "cổ đông >5% thu đông"),
+    "25-NSE":  ("XAU", 3.0, "thông báo hủy niêm yết"),
+    "NT 10-K": ("XAU", 2.0, "nộp báo cáo năm trễ"),
+    "NT 10-Q": ("XAU", 1.5, "nộp báo cáo quý trễ"),
 }
 
 ITEMS = {
-    "1.01": "ky hop dong trong yeu",
-    "1.03": "PHA SAN",
-    "2.01": "mua/ban tai san",
-    "2.02": "cong bo ket qua kinh doanh",
-    "3.01": "NGUY CO HUY NIEM YET",
-    "3.02": "ban co phieu khong dang ky (pha loang)",
-    "5.02": "thay doi lanh dao",
-    "7.01": "cong bo Reg FD",
-    "8.01": "su kien khac",
+    "1.01": "ký hợp đồng trọng yếu",
+    "1.03": "PHÁ SẢN",
+    "2.01": "mua/bán tài sản",
+    "2.02": "công bố kết quả kinh doanh",
+    "3.01": "NGUY CƠ HỦY NIÊM YẾT",
+    "3.02": "bán cổ phiếu không đăng ký (pha loãng)",
+    "5.02": "thay đổi lãnh đạo",
+    "7.01": "công bố Reg FD",
+    "8.01": "sự kiện khác",
 }
 ITEM_RISK = {"1.03": 3.0, "3.01": 2.5, "3.02": 2.0}
 
@@ -189,15 +189,22 @@ def assess(sym: str) -> dict:
 
 def label(risk: float, earn: bool = False) -> str:
     if risk >= 3.0:
-        return "🔴 RUI RO PHA LOANG CAO"
+        return "🔴 RỦI RO PHA LOÃNG CAO"
     if risk >= 1.5:
-        return "🟠 co ke hoach phat hanh"
+        return "🟠 Có kế hoạch phát hành"
     if risk <= -0.5:
-        return "🟢 co dong lon gom hang"
+        return "🟢 Cổ đông lớn gom hàng"
     if earn:
-        return "🔵 vua bao cao KQKD"
-    return "⚪ khong thay tin hieu dac biet"
+        return "🔵 Vừa báo cáo kết quả kinh doanh"
+    return "⚪ Không thấy tín hiệu đặc biệt"
 
+
+def block(sym: str, max_flags: int = 3) -> list[str]:
+    """Vài dòng mô tả hồ sơ SEC cho tin nhắn Telegram."""
+    a = assess(sym)
+    if a["n"] == 0:
+        return ["⚪ Không tra được hồ sơ"]
+    return [label(a["risk"], a.get("earn", False))] + list(a["flags"][:max_flags])
 
 def line(sym: str) -> str:
     """Mot dong ngan gon de nhet vao alert Telegram."""

@@ -32,6 +32,18 @@ ALERT_SCORE = 7.0
 ESCALATE_DELTA = 3.0   # diem tang thap nay -> gui lai
 COOLDOWN = 540         # 9 phut moi ma
 MAX_ALERTS = 45        # tran moi phien, chong spam
+SEC_RISK_MAX = 3.0      # risk >= nguong nay -> tru diem
+SEC_PENALTY  = 2.0
+MIN_MSO      = 5        # bo qua alert trong 5 phut dau phien
+BAD_SUFFIX   = ("W", "WS", "R", "RT", "U", "UN", "PR")
+
+
+def junk_ticker(s: str) -> bool:
+    s = (s or "").upper()
+    if "." in s or "-" in s:
+        suf = s.replace("-", ".").partition(".")[2]
+        return suf in BAD_SUFFIX
+    return len(s) == 5 and s[-1] in ("W", "R", "U")
 
 DDL = """
 CREATE TABLE IF NOT EXISTS alerts (
@@ -95,36 +107,48 @@ def loud_mode(score: float) -> bool:
 
 def fmt(h: dict, kind: str, ck: SessionClock) -> str:
     icon = {"NEW": "🔴", "UP": "⬆️"}.get(kind, "🔵")
+    tag = {"NEW": "TÍN HIỆU MỚI", "UP": "TĂNG ĐIỂM"}.get(kind, "CẬP NHẬT")
     chg = (h["chg"] or 0) * 100
-    flt = f"{h['float_sh'] / 1e6:.1f}M" if h.get("float_sh") else "?"
     mso = ck.mso()
-    fresh = ("🟢 realtime" if h["freshness"] == "REALTIME"
-             else "🟡 tre ~15 phut")
-    sec = ""
-    try:
-        sec = esc(edgar.line(h["sym"]))
-    except Exception:  # noqa: BLE001
-        sec = ""
+    fresh = ("🟢 thời gian thực" if h["freshness"] == "REALTIME"
+             else "🟡 trễ ~15 phút")
 
-    lines = [
-        f"{icon} <b>${esc(h['sym'])}</b>  {chg:+.1f}%  ${h['px']:.2f}"
-        f"   <code>score {h['score']:.1f}</code>",
-        f"RVOL <b>{h['rvol']:.1f}x</b> · ATR {h['atr_move']:.1f} · "
-        f"float {flt} (quay {h['float_rot']:.2f}x)",
-        f"KL ${h['dollar_vol'] / 1e6:.0f}M · phut {mso} cua phien · {fresh}",
+    dv = h.get("dollar_vol") or 0
+    dv_txt = f"{dv / 1e9:.2f} tỷ" if dv >= 1e9 else f"{dv / 1e6:.0f} triệu"
+    flt = f"{h['float_sh'] / 1e6:.1f} triệu CP" if h.get("float_sh") else "không rõ"
+    rot = f" · đã quay {h['float_rot']:.2f}×" if h.get("float_rot") else ""
+
+    L = [
+        f"{icon} <b>${esc(h['sym'])}</b>  <b>{chg:+.1f}%</b>  ${h['px']:.2f}",
+        f"<i>{tag}</i> · điểm <b>{h['score']:.1f}</b> · phút {mso}/390 · {fresh}",
+        "",
+        f"📊 RVOL <b>{h['rvol']:.1f}×</b> so với trung bình 20 ngày",
+        f"📈 Biên độ {h['atr_move']:.1f}× ATR ngày",
+        f"💵 Giá trị giao dịch {dv_txt} USD",
+        f"🔄 Lưu hành tự do {flt}{rot}",
+    ]
+
+    try:
+        sec = edgar.block(h["sym"])
+    except Exception:  # noqa: BLE001
+        sec = []
+    if sec:
+        L += ["", "📄 <b>Hồ sơ SEC</b>"]
+        L += [f"    {esc(x)}" for x in sec]
+
+    L += [
+        "",
         f"<i>{esc(h['explain'])}</i>",
         "",
-        *([f"<i>{sec}</i>", ""] if sec else []),
-        "",
         f"<a href=\"https://finviz.com/quote.ashx?t={h['sym']}\">Finviz</a> · "
-        f"<a href=\"https://stockanalysis.com/stocks/{h['sym']}/\">Analysis</a>"
+        f"<a href=\"https://stockanalysis.com/stocks/{h['sym']}/\">Phân tích</a>"
         + (f" · <a href=\"https://www.sec.gov/cgi-bin/browse-edgar?"
            f"action=getcompany&CIK={h['cik']}&type=8-K&dateb=&owner=include"
            f"&count=10\">EDGAR</a>" if h.get("cik") else ""),
         "",
-        "⚠️ <i>Chua co lop catalyst. Tu kiem chung truoc khi lam gi.</i>",
+        "⚠️ <i>Dữ liệu thô, chưa kiểm chứng. Tự xác minh trước khi quyết định.</i>",
     ]
-    return "\n".join(lines)
+    return "\n".join(L)
 
 
 # ---------------- cac vong lap ----------------
@@ -158,6 +182,12 @@ async def loop_score(st: State, n, ck: SessionClock, dry: bool) -> None:
                     if h["score"] < ALERT_SCORE:
                         continue
                     sym = h["sym"]
+                    if junk_ticker(sym):
+                        log(f"bo qua {sym}: warrant/unit/right")
+                        continue
+                    _m = ck.mso()
+                    if _m is not None and _m < MIN_MSO:
+                        continue
                     prev = st.seen.get(sym)
                     if prev is None:
                         kind = "NEW"
@@ -166,6 +196,19 @@ async def loop_score(st: State, n, ck: SessionClock, dry: bool) -> None:
                     else:
                         st.seen[sym]["best"] = max(prev["best"], h["score"])
                         continue
+                    try:
+                        _a = edgar.assess(sym)
+                        h["sec_risk"] = _a["risk"]
+                        if _a["risk"] >= SEC_RISK_MAX:
+                            h["score"] -= SEC_PENALTY
+                            log(f"{sym}: SEC risk {_a['risk']} -> tru "
+                                f"{SEC_PENALTY} diem, con {h['score']:.1f}")
+                            if h["score"] < ALERT_SCORE:
+                                st.seen[sym] = {"best": h["score"],
+                                                "alerts": prev["alerts"] if prev else 0}
+                                continue
+                    except Exception:  # noqa: BLE001
+                        h["sec_risk"] = None
                     if st.n_alerts >= MAX_ALERTS:
                         continue
 
