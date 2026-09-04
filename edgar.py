@@ -35,8 +35,8 @@ SHELF_DAYS = 120   # shelf con hieu luc
 FORMS = {
     "424B5": ("BAN_NGAY", 3.0, "đang chào bán cổ phiếu (shelf takedown)"),
     "424B4": ("BAN_NGAY", 3.0, "đang chào bán cổ phiếu"),
-    "424B3": ("BAN_NGAY", 2.0, "cao bach bo sung"),
-    "424B2": ("BAN_NGAY", 2.0, "cao bach bo sung"),
+    "424B3": ("BAN_NGAY", 2.0, "cáo bạch bổ sung"),
+    "424B2": ("BAN_NGAY", 2.0, "cáo bạch bổ sung"),
     "FWP":   ("BAN_NGAY", 1.5, "tài liệu chào bán tự do"),
     "S-3":     ("SAN_SANG", 1.5, "đăng ký kê hàng - có thể bán bất cứ lúc nào"),
     "S-3ASR":  ("SAN_SANG", 1.5, "đăng ký kê hàng tự động hiệu lực"),
@@ -144,11 +144,11 @@ def filings(sym: str, days: int = SHELF_DAYS) -> list[dict]:
 
 
 def assess(sym: str) -> dict:
-    """Cham diem rui ro tu ho so SEC. Duong = nguy hiem, am = tich cuc."""
+    """Chấm điểm rủi ro từ hồ sơ SEC. Dương = nguy hiểm, âm = tích cực."""
     fs = filings(sym)
     if not fs:
         return {"sym": sym, "risk": 0.0, "flags": [], "n": 0, "earn": False,
-                "note": "khong co ho so / thieu CIK"}
+                "note": "không có hồ sơ / thiếu CIK"}
     risk = 0.0
     flags: list[str] = []
     earn = False
@@ -158,21 +158,21 @@ def assess(sym: str) -> dict:
         if grp == "BAN_NGAY":
             risk += w if fresh else w * 0.3
             if fresh:
-                flags.append(f"{f['form']} {f['age']}d truoc - {desc}")
+                flags.append(f"{f['form']} {f['age']}d trước - {desc}")
             else:
-                flags.append(f"{f['form']} {f['age']}d truoc - {desc} (cu)")
+                flags.append(f"{f['form']} {f['age']}d trước - {desc} (cũ)")
         elif grp == "SAN_SANG":
             risk += w if f["age"] <= 30 else w * 0.4
             if f["age"] <= 30:
-                flags.append(f"{f['form']} {f['age']}d truoc - {desc}")
+                flags.append(f"{f['form']} {f['age']}d trước - {desc}")
             else:
-                flags.append(f"{f['form']} {f['age']}d truoc - {desc} (cu)")
+                flags.append(f"{f['form']} {f['age']}d trước - {desc} (cũ)")
         elif grp == "XAU":
             risk += w if fresh else w * 0.5
-            flags.append(f"{f['form']} {f['age']}d truoc - {desc}")
+            flags.append(f"{f['form']} {f['age']}d trước - {desc}")
         elif grp == "GOM_HANG" and f["age"] <= 30:
             risk += w
-            flags.append(f"{f['form']} {f['age']}d truoc - {desc}")
+            flags.append(f"{f['form']} {f['age']}d trước - {desc}")
         elif grp == "TIN" and fresh:
             codes = [c.strip() for c in f["items"].split(",") if c.strip()]
             if "2.02" in codes:
@@ -180,9 +180,9 @@ def assess(sym: str) -> dict:
             named = [ITEMS[c] for c in codes if c in ITEMS]
             risk += sum(ITEM_RISK.get(c, 0.0) for c in codes)
             if named:
-                flags.append(f"8-K {f['age']}d truoc - " + "; ".join(named))
+                flags.append(f"8-K {f['age']}d trước - " + "; ".join(named))
             else:
-                flags.append(f"8-K {f['age']}d truoc")
+                flags.append(f"8-K {f['age']}d trước")
     return {"sym": sym, "risk": round(risk, 1), "flags": flags[:6],
             "n": len(fs), "top": fs[0] if fs else None, "earn": earn}
 
@@ -207,10 +207,10 @@ def block(sym: str, max_flags: int = 3) -> list[str]:
     return [label(a["risk"], a.get("earn", False))] + list(a["flags"][:max_flags])
 
 def line(sym: str) -> str:
-    """Mot dong ngan gon de nhet vao alert Telegram."""
+    """Một dòng ngắn gọn để đặt vào alert Telegram."""
     a = assess(sym)
     if a["n"] == 0:
-        return "SEC: khong tra duoc ho so"
+        return "SEC: không tra được hồ sơ"
     head = f"SEC: {label(a["risk"], a.get("earn", False))}"
     return head + ("\n" + "\n".join("· " + f for f in a["flags"][:3])
                    if a["flags"] else "")
@@ -223,11 +223,11 @@ def _demo(syms: list[str]) -> None:
         if a["n"] == 0:
             print("   ", a.get("note", ""))
             continue
-        print(f"    {a['n']} ho so trong {SHELF_DAYS} ngay")
+        print(f"    {a['n']} hồ sơ trong {SHELF_DAYS} ngày")
         for f in a["flags"]:
             print("    ·", f)
         if a["top"]:
-            print("    moi nhat:", a["top"]["form"], a["top"]["date"],
+            print("    mới nhất:", a["top"]["form"], a["top"]["date"],
                   "\n   ", a["top"]["url"])
 
 
@@ -238,5 +238,5 @@ if __name__ == "__main__":
         args = [r[0] for r in con.execute(
             "SELECT DISTINCT sym FROM alerts ORDER BY ts_et DESC LIMIT 10")]
         con.close()
-        print("Cac ma da alert gan day:", ", ".join(args))
+        print("Các mã đã alert gần đây:", ", ".join(args))
     _demo(args)

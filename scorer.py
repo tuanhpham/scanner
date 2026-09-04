@@ -109,22 +109,22 @@ def score_one(u: dict, b: dict, frac: float) -> dict:
     if rv > 1:
         c = W_RVOL * min(math.log10(rv), CAP_RVOL)
         s += c
-        parts.append(f"rvol {rv:.1f}x(+{c:.1f})")
+        parts.append(f"RVOL {rv:.1f}× (+{c:.1f})")
     if atr_move > 0.2:
         c = W_ATR * min(atr_move / 2.0, 3.0)
         s += c
-        parts.append(f"atr {atr_move:.1f}(+{c:.1f})")
+        parts.append(f"biên độ {atr_move:.1f}× ATR (+{c:.1f})")
     if rot > 0.05:
         c = W_ROT * min(rot, 3.0)
         s += c
-        parts.append(f"rot {rot:.2f}(+{c:.1f})")
+        parts.append(f"quay vòng {rot:.2f}× (+{c:.1f})")
     if dvol > MIN_DOLLAR_VOL:
         c = W_DV * min(math.log10(dvol / MIN_DOLLAR_VOL), 1.5)
         s += c
-        parts.append(f"${dvol / 1e6:.0f}M(+{c:.1f})")
+        parts.append(f"{dvol / 1e6:.0f} triệu USD (+{c:.1f})")
     if u.get("sources") and set(u["sources"]) <= {"alpaca_mover", "alpaca_active"}:
         s += W_FRESH
-        parts.append(f"alpaca-only(+{W_FRESH:.1f})")
+        parts.append(f"chỉ có Alpaca (+{W_FRESH:.1f})")
 
     return {
         "sym": u["sym"], "score": round(s, 2), "px": px, "chg": chg,
