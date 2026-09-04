@@ -252,6 +252,11 @@ def _demo(syms: list[str]) -> None:
 
 
 if __name__ == "__main__":
+    try:                      # terminal Windows mac dinh cp1252, khong co dau
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        pass
+
     args = sys.argv[1:]
     if not args:
         con = sqlite3.connect(DB)

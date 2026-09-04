@@ -132,7 +132,8 @@ def score_one(u: dict, b: dict, frac: float) -> dict:
         "float_sh": flt, "float_rot": round(rot, 3), "dollar_vol": dvol,
         "cik": b.get("cik"), "diverge": round(diverge, 3),
         "freshness": "REALTIME" if u.get("fresh", 0) >= 3 else "~15min",
-        "sources": sorted(u.get("sources", [])), "explain": " ".join(parts),
+        # " · " la dau phan cach render.render_why() dua vao de tach tung dong
+        "sources": sorted(u.get("sources", [])), "explain": " · ".join(parts),
     }
 
 
@@ -190,7 +191,14 @@ def rank(universe: dict[str, dict], base: dict[str, dict] | None = None,
 
 
 if __name__ == "__main__":
+    import sys
+
     import universe_live
+
+    try:                      # terminal Windows mac dinh cp1252, khong co dau
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        pass
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--force", action="store_true",

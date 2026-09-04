@@ -138,10 +138,11 @@ def build_view(h: dict, kind: str, ck: SessionClock | None = None,
         sec = edgar.assess(h["sym"])
     except Exception:  # noqa: BLE001
         sec = None
-    upd, mso = "", None
+    upd, mso, smin = "", None, 390
     try:
         upd = ck.now_et(dt.datetime.now(dt.timezone.utc)).strftime("%H:%M")
         mso = ck.mso()
+        smin = ck.session_minutes() or 390     # 210 neu la nua phien
     except Exception:  # noqa: BLE001
         pass
     try:
@@ -152,7 +153,8 @@ def build_view(h: dict, kind: str, ck: SessionClock | None = None,
         tracked, watched, prev = False, False, None
     return render.AlertView.from_scan(
         h, sec=sec, prev=prev, kind=kind, session=session_state(ck),
-        updated=upd, mso=mso, detail=detail, tracked=tracked, watched=watched,
+        updated=upd, mso=mso, session_min=smin, detail=detail,
+        tracked=tracked, watched=watched,
         news_url=f"https://www.google.com/search?q={h['sym']}+stock&tbm=nws")
 
 

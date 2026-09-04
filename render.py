@@ -1,14 +1,29 @@
 """render.py — dung message alert cho Telegram (HTML parse mode).
 
 Thuan ham: khong network, khong DB -> test bang dict gia.
+    python render.py          # in ra 3 alert mau (L1/L2/L3)
+
+Quy uoc ngon ngu: thuat ngu thi truong giu tieng Anh (RVOL, ATR, Float,
+WATCH / STRONG MOMENTUM / EXTREME EVENT); moi chu con lai la tieng Viet
+CO DAU, dong bo voi mo ta ho so SEC do edgar.py tra ve.
+
 Telegram KHONG ho tro mau chu. Chi co: pre (khoi nen xam),
 blockquote (vach doc ben trai), b/i/u/s/code, emoji.
 Muon "mau" -> dung o vuong mau + tam giac huong.
+
+Cau truc mot alert (moi khoi cach nhau 1 dong trong):
+    HEADER   ticker · gia · %thay doi / xep loai · thanh diem / trang thai
+    BADGE    the canh bao ngan (float thap, penny)
+    DATA     panel <pre> 3 nhom so lieu, cot thang hang
+    RISK     blockquote, tieu de + giai thich
+    SEC      blockquote expandable, danh sach ho so
+    WHY      blockquote expandable, breakdown diem
+    LINK     mot dong link chu (long-press mo app)
+    FOOT     mien tru trach nhiem
 """
 from __future__ import annotations
 
 import html
-import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -27,41 +42,62 @@ SEC_MID     = 1.5
 MICRO_PRICE = 1.50
 SAFE_LEN    = 3800        # Telegram cung 4096
 EXPANDABLE  = True        # <blockquote expandable> can Bot API >= 7.3
-TV_TEXT_LINK = True       # them 1 dong link cuoi (de long-press mo app)
+TV_TEXT_LINK = True       # them 1 dong link chu cuoi (de long-press mo app)
 
-W_LAB, W_VAL = 12, 9      # do rong cot trong panel
-RULE_W = 21
+# Do rong cot trong panel <pre>. Nhan phai <= W_LAB de khong day cot gia tri.
+W_LAB, W_VAL, W_DLT = 11, 9, 7
+PANEL_W = W_LAB + W_VAL
 
 GAIN, LOSS, FLAT = "🟩", "🟥", "⬜"
 
+# Uu tien giu lai khi tin nhan vuot SAFE_LEN — khoi diem thap bi bo truoc.
+P_HEAD, P_FOOT, P_DATA, P_BADGE, P_RISK, P_LINK, P_SEC, P_WHY = 9, 8, 7, 6, 5, 4, 3, 2
+
 TXT = {
+    # xep loai muc do
     "lvl1": "WATCH", "lvl2": "STRONG MOMENTUM", "lvl3": "EXTREME EVENT",
     "ico1": "🟨", "ico2": "🟧", "ico3": "🚨",
-    "new": "TIN HIEU MOI", "up": "TANG DIEM", "upd": "CAP NHAT",
-    "live": "🟢 LIVE", "delayed": "🟡 TRE ~15P", "closed": "⚪ DA DONG PHIEN",
-    "g_mom": "MOMENTUM", "g_vol": "VOLATILITY", "g_liq": "LIQUIDITY",
-    "h_risk": "⚠️ <b>RUI RO</b>", "h_sec": "📄 <b>HO SO SEC</b>",
-    "h_why": "🧮 <b>VI SAO</b>",
-    "r_dil_hi": "PHA LOANG — CAO", "r_dil_mid": "DA DANG KY KE PHAT HANH",
-    "r_vol": "BIEN DONG CUC MANH", "r_float": "AP LUC FLOAT",
-    "r_micro": "GIA THAP / PENNY", "r_halt": "NGUY CO HALT (LULD)",
-    "r_dil_hi_n": "Dang chao ban — co phieu moi co the ra thi truong bat ky luc nao.",
-    "r_dil_mid_n": "Co ke phat hanh — phat hanh khong can bao truoc.",
-    "r_vol_n": "Bien do {a:.1f}x ATR ngay thuong.",
-    "r_float_n": "Float {f} · quay {r:.1f}x — so lenh mong, gia giat manh.",
-    "r_micro_n": "Gia ${p:.2f} — spread rong, truot gia lon.",
-    "r_halt_n": "Bien dong {c:+.0f}% trong phien — de bi tam dung giao dich.",
-    "sec_clean": "🟢 Khong thay dau hieu pha loang",
-    "sec_none": "⚪ Khong tra duoc ho so (thieu CIK)",
-    "sec_earn": "🔵 Vua bao cao ket qua kinh doanh",
-    "b_low_float": "⚠️ FLOAT THAP", "b_micro_float": "🔥 FLOAT SIEU NHO",
-    "b_press": "🔥 AP LUC FLOAT", "b_penny": "⚠️ PENNY",
-    "foot_raw": "Du lieu tho, chua kiem chung · Khong phai loi khuyen dau tu",
-    "foot_part": "Nguon co the tre · Tu xac minh truoc khi quyet dinh",
-    "k_chart": "📈 TradingView", "k_fviz": "📊 Finviz", "k_sec": "📄 SEC",
-    "k_news": "📰 Tin", "k_more": "🔎 Chi tiet", "k_less": "◀ Thu gon",
-    "k_ref": "🔄 Cap nhat", "k_track": "🔔 Theo doi", "k_untrack": "🔕 Bo theo doi",
-    "k_wl": "⭐ Watchlist", "k_wl_on": "★ Da luu",
+    # loai tin
+    "new": "Tín hiệu mới", "up": "Tăng điểm", "upd": "Cập nhật",
+    # trang thai du lieu
+    "live": "🟢 Realtime", "delayed": "🟡 Trễ ~15 phút",
+    "pre": "🌙 Trước phiên", "post": "🌆 Sau phiên",
+    "closed": "⚪ Đã đóng phiên",
+    # ten nhom so lieu trong panel
+    "g_flow": "DÒNG TIỀN", "g_vol": "BIẾN ĐỘNG", "g_str": "CƠ CẤU",
+    # tieu de section
+    "h_data": "📊 <b>SỐ LIỆU</b>", "h_risk": "⚠️ <b>RỦI RO</b>",
+    "h_sec": "📄 <b>HỒ SƠ SEC</b>", "h_why": "🧮 <b>VÌ SAO CÓ TÍN HIỆU</b>",
+    # nhan hang trong panel
+    "m_rvol": "RVOL", "m_dvol": "Giá trị GD", "m_rot": "Quay vòng",
+    "m_atr": "Biên độ ATR", "m_float": "Float", "m_fcap": "Vốn float",
+    # muc rui ro: tieu de + giai thich
+    "r_dil_hi": "PHA LOÃNG — CAO", "r_dil_mid": "ĐÃ ĐĂNG KÝ KÊ PHÁT HÀNH",
+    "r_vol": "BIẾN ĐỘNG CỰC MẠNH", "r_float": "ÁP LỰC FLOAT",
+    "r_micro": "GIÁ THẤP / PENNY", "r_halt": "NGUY CƠ HALT (LULD)",
+    "r_dil_hi_n": "Đang chào bán — cổ phiếu mới có thể ra thị trường bất kỳ lúc nào.",
+    "r_dil_mid_n": "Có kế hoạch phát hành — không cần báo trước.",
+    "r_vol_n": "Biên độ {a:.1f}× ATR ngày thường.",
+    "r_float_n": "Float {f} · quay {r:.1f}× — sổ lệnh mỏng, giá giật mạnh.",
+    "r_micro_n": "Giá ${p:.2f} — spread rộng, trượt giá lớn.",
+    "r_halt_n": "Biến động {c:+.0f}% trong phiên — dễ bị tạm dừng giao dịch.",
+    # ket luan SEC
+    "sec_clean": "🟢 Không thấy dấu hiệu pha loãng",
+    "sec_none": "⚪ Không tra được hồ sơ (thiếu CIK)",
+    "sec_earn": "🔵 Vừa báo cáo kết quả kinh doanh",
+    # the canh bao
+    "b_low_float": "⚠️ FLOAT THẤP", "b_micro_float": "🔥 FLOAT SIÊU NHỎ",
+    "b_press": "🔥 ÁP LỰC FLOAT", "b_penny": "⚠️ PENNY",
+    # chan trang
+    "foot_raw": "Dữ liệu thô, chưa kiểm chứng · Không phải lời khuyên đầu tư",
+    "foot_part": "Nguồn có thể trễ · Tự xác minh trước khi quyết định",
+    # nhan link chu
+    "t_chart": "Biểu đồ", "t_fviz": "Finviz", "t_sec": "EDGAR",
+    # nhan nut
+    "k_chart": "📈 Biểu đồ", "k_fviz": "📊 Finviz", "k_sec": "📄 SEC",
+    "k_news": "📰 Tin", "k_more": "🔎 Chi tiết", "k_less": "◀ Thu gọn",
+    "k_ref": "🔄 Cập nhật", "k_track": "🔔 Theo dõi", "k_untrack": "🔕 Bỏ theo dõi",
+    "k_wl": "⭐ Watchlist", "k_wl_on": "★ Đã lưu",
 }
 
 CB_VER = "a1"
@@ -73,12 +109,15 @@ def esc(s: Any) -> str:
 
 
 def _money(v: float | None) -> str | None:
+    """Duoi 100M giu 1 chu so thap phan: small-cap thi $2.5M khac han $2M."""
     if not v:
         return None
     if v >= 1e9:
         return f"${v / 1e9:.2f}B"
-    if v >= 1e6:
+    if v >= 1e8:
         return f"${v / 1e6:.0f}M"
+    if v >= 1e6:
+        return f"${v / 1e6:.1f}M"
     return f"${v / 1e3:.0f}K"
 
 
@@ -105,12 +144,13 @@ def _chg_badge(chg: float) -> str:
 
 def _delta(cur: float | None, prev: float | None, dig: int = 1,
            floor: float = 0.05) -> str:
+    """Thay doi so voi lan gui truoc. Chuoi tran, _prow lo phan can le."""
     if cur is None or prev is None:
         return ""
     d = cur - prev
     if abs(d) < floor:
-        return "  →"
-    return f"  {'▲' if d > 0 else '▼'}{abs(d):.{dig}f}"
+        return "→"
+    return f"{'▲' if d > 0 else '▼'} {abs(d):.{dig}f}"
 
 
 def _quote(body: str, expand: bool = False) -> str:
@@ -120,12 +160,15 @@ def _quote(body: str, expand: bool = False) -> str:
 
 
 def _prow(lab: str, val: str, dlt: str = "") -> str:
-    return f"{lab.upper():<{W_LAB}}{val:>{W_VAL}}{dlt}"
+    """Mot hang trong panel: nhan trai, gia tri phai, delta cot rieng."""
+    row = f"{lab:<{W_LAB}}{val:>{W_VAL}}"
+    return f"{row}  {dlt:<{W_DLT}}".rstrip() if dlt else row
 
 
 def _prule(title: str) -> str:
-    dash = max(2, RULE_W - len(title) - 4)
-    return f"── {title} " + "─" * dash
+    """Vach ngan nhom, rong dung bang panel de cac khoi thang hang."""
+    head = f"── {title} "
+    return head + "─" * max(2, PANEL_W - len(head))
 
 
 # ───────────────────────── data model ─────────────────────────
@@ -145,6 +188,7 @@ class AlertView:
     freshness: str = "REALTIME"
     updated: str = ""
     mso: int | None = None
+    session_min: int = 390          # 210 neu la nua phien
     explain: str = ""
     cik: str | None = None
     sec: dict | None = None
@@ -158,8 +202,9 @@ class AlertView:
     def from_scan(cls, h: dict, *, sec: dict | None = None,
                   prev: dict | None = None, kind: str = "NEW",
                   session: str = "LIVE", updated: str = "",
-                  mso: int | None = None, detail: bool = False,
-                  tracked: bool = False, watched: bool = False,
+                  mso: int | None = None, session_min: int = 390,
+                  detail: bool = False, tracked: bool = False,
+                  watched: bool = False,
                   news_url: str | None = None) -> "AlertView":
         return cls(
             sym=h["sym"], px=float(h.get("px") or 0),
@@ -169,7 +214,8 @@ class AlertView:
             dollar_vol=h.get("dollar_vol"), float_sh=h.get("float_sh"),
             float_rot=h.get("float_rot"), session=session,
             freshness=h.get("freshness") or "REALTIME", updated=updated,
-            mso=mso, explain=h.get("explain") or "", cik=h.get("cik"),
+            mso=mso, session_min=session_min or 390,
+            explain=h.get("explain") or "", cik=h.get("cik"),
             sec=sec, prev=prev, detail=detail, tracked=tracked,
             watched=watched, news_url=news_url)
 
@@ -199,56 +245,48 @@ class AlertView:
     def low_float(self) -> bool:
         return bool(self.float_sh) and self.float_sh < LOW_FLOAT
 
+    @property
+    def float_cap(self) -> float:
+        """Von hoa phan float — khac von hoa tong, day moi la phan giao dich."""
+        return (self.float_sh or 0) * (self.px or 0)
 
-# ───────────────────────── nhom so lieu ─────────────────────────
+
+# ───────────────────────── DATA: panel so lieu ─────────────────────────
 def _groups(v: AlertView) -> list[tuple[str, list[tuple[str, str, str]]]]:
-    """[(ten_nhom, [(label, value, delta), ...]), ...] — nhom rong bi bo."""
+    """[(ten_nhom, [(nhan, gia_tri, delta), ...]), ...] — nhom rong bi bo.
+
+    Gia va %thay doi KHONG nam trong panel: header da hien to va dam roi.
+    """
     p = v.prev or {}
     g: list[tuple[str, list[tuple[str, str, str]]]] = []
 
     rows = []
     if v.rvol:
-        rows.append(("RVOL", f"{v.rvol:.1f}x", _delta(v.rvol, p.get("rvol"))))
+        rows.append((TXT["m_rvol"], f"{v.rvol:.1f}×",
+                     _delta(v.rvol, p.get("rvol"))))
     if (dv := _money(v.dollar_vol)):
-        rows.append(("Volume", dv, ""))
+        rows.append((TXT["m_dvol"], dv, ""))
     if v.float_rot:
-        rows.append(("Turnover", f"{v.float_rot:.2f}x",
+        rows.append((TXT["m_rot"], f"{v.float_rot:.2f}×",
                      _delta(v.float_rot, p.get("float_rot"), 2)))
     if rows:
-        g.append((TXT["g_mom"], rows))
+        g.append((TXT["g_flow"], rows))
 
     rows = []
     if v.atr_move:
-        rows.append(("ATR", f"{v.atr_move:.1f}x",
+        rows.append((TXT["m_atr"], f"{v.atr_move:.1f}×",
                      _delta(v.atr_move, p.get("atr_move"))))
-    if v.chg:
-        rows.append(("Range", f"{v.chg:+.1f}%", ""))
-    if v.px:
-        rows.append(("Gia", f"${v.px:.2f}", ""))
     if rows:
         g.append((TXT["g_vol"], rows))
 
     rows = []
     if (fl := _shares(v.float_sh)):
-        rows.append(("Float", fl, ""))
+        rows.append((TXT["m_float"], fl, ""))
+    if (fc := _money(v.float_cap)):
+        rows.append((TXT["m_fcap"], fc, ""))
     if rows:
-        g.append((TXT["g_liq"], rows))
+        g.append((TXT["g_str"], rows))
     return g
-
-
-def _badges(v: AlertView) -> list[str]:
-    """Nhan canh bao dat NGOAI panel — trong <pre> khong bold/emoji dep duoc."""
-    out = []
-    if v.float_sh and v.float_sh < TINY_FLOAT:
-        out.append(f"{TXT['b_micro_float']} · {_shares(v.float_sh)}")
-    elif v.low_float and (v.float_rot or 0) >= 2.0:
-        out.append(f"{TXT['b_press']} · {_shares(v.float_sh)} quay "
-                   f"{v.float_rot:.1f}x")
-    elif v.low_float:
-        out.append(f"{TXT['b_low_float']} · {_shares(v.float_sh)}")
-    if v.px and v.px < MICRO_PRICE:
-        out.append(f"{TXT['b_penny']} · ${v.px:.2f}")
-    return out
 
 
 def render_metrics(v: AlertView) -> list[str]:
@@ -263,12 +301,28 @@ def render_metrics(v: AlertView) -> list[str]:
                 body.append("")
             body.append(_prule(name))
             body += [_prow(*r) for r in rows]
-        return [f"<pre>{esc(chr(10).join(body))}</pre>"]
-    out: list[str] = []
+        return [TXT["h_data"], f"<pre>{esc(chr(10).join(body))}</pre>"]
+    out: list[str] = [TXT["h_data"]]
     for name, rows in g:
-        out.append(f"<b>{name}</b>")
+        out.append(f"<b>{esc(name)}</b>")
         out.append(_quote("\n".join(f"<code>{esc(_prow(*r))}</code>"
                                     for r in rows)))
+    return out
+
+
+# ───────────────────────── BADGE: the canh bao ─────────────────────────
+def _badges(v: AlertView) -> list[str]:
+    """Nhan ngan dat NGOAI panel — trong <pre> khong bold/emoji dep duoc."""
+    out = []
+    if v.float_sh and v.float_sh < TINY_FLOAT:
+        out.append(f"{TXT['b_micro_float']} · {_shares(v.float_sh)}")
+    elif v.low_float and (v.float_rot or 0) >= 2.0:
+        out.append(f"{TXT['b_press']} · {_shares(v.float_sh)} quay "
+                   f"{v.float_rot:.1f}×")
+    elif v.low_float:
+        out.append(f"{TXT['b_low_float']} · {_shares(v.float_sh)}")
+    if v.px and v.px < MICRO_PRICE:
+        out.append(f"{TXT['b_penny']} · ${v.px:.2f}")
     return out
 
 
@@ -293,9 +347,11 @@ def render_risk(v: AlertView, max_items: int = 3) -> list[str]:
         return []
     items.sort(key=lambda x: -x[0])
     body = []
-    for _, ico, title, note in items[:max_items]:
+    for i, (_, ico, title, note) in enumerate(items[:max_items]):
+        if i:
+            body.append("")
         body.append(f"{ico} <b>{esc(title)}</b>")
-        body.append(esc(note))
+        body.append(f"<i>{esc(note)}</i>")
     return [TXT["h_risk"], _quote("\n".join(body))]
 
 
@@ -306,8 +362,8 @@ def _sec_lines(v: AlertView) -> list[str]:
         out = []
         for d in det[:5]:
             n = d.get("n") or 1
-            extra = f" · {n} lan/120 ngay" if n > 1 else ""
-            out.append(f"<b>{esc(d['form'])}</b> · {d['age']} ngay truoc · "
+            extra = f" · {n} lần/120 ngày" if n > 1 else ""
+            out.append(f"<b>{esc(d['form'])}</b> · {d['age']} ngày trước · "
                        f"{esc(d.get('desc', ''))}{extra}")
         return out
     return [f"<b>{esc(f.split(' ')[0])}</b> {esc(f.partition(' ')[2])}"
@@ -315,6 +371,8 @@ def _sec_lines(v: AlertView) -> list[str]:
 
 
 def render_sec(v: AlertView) -> list[str]:
+    """Rui ro cao -> chi liet ke ho so, vi section RISK da ket luan giup.
+    Rui ro thap -> can mot dong ket luan, khong thi nguoi doc phai tu suy."""
     if not v.has_sec:
         return [TXT["h_sec"], f"<i>{TXT['sec_none']}</i>"]
     body = _sec_lines(v)
@@ -328,19 +386,20 @@ def render_sec(v: AlertView) -> list[str]:
 
 # ───────────────────────── WHY ─────────────────────────
 def render_why(v: AlertView) -> list[str]:
-    bits = []
-    if v.explain:
-        bits.append(esc(v.explain))
-    prov = []
-    if v.mso is not None:
-        prov.append(f"phut {v.mso}/390")
-    prov.append("nguon realtime" if v.freshness == "REALTIME" else "tre ~15 phut")
+    """Breakdown diem, moi thanh phan mot dong + mot dong xuat xu du lieu."""
+    body = []
+    for part in (v.explain or "").split(" · "):
+        if part.strip():
+            body.append("· " + esc(part.strip()))
+    prov = ["nguồn realtime" if v.freshness == "REALTIME" else "nguồn trễ ~15 phút"]
     if v.updated:
-        prov.append(f"quet {v.updated} ET")
+        prov.append(f"quét {v.updated} ET")
     if (p := v.prev or {}).get("score") is not None:
-        prov.append(f"diem truoc {p['score']:.1f}")
-    bits.append("<i>" + esc(" · ".join(prov)) + "</i>")
-    return [TXT["h_why"], _quote("\n".join(bits), True)]
+        prov.append(f"điểm trước {p['score']:.1f}")
+    if body:
+        body.append("")
+    body.append(f"<i>{esc(' · '.join(prov))}</i>")
+    return [TXT["h_why"], _quote("\n".join(body), True)]
 
 
 # ───────────────────────── URL ─────────────────────────
@@ -359,57 +418,107 @@ def edgar_url(cik: str | None) -> str | None:
             f"&CIK={cik}&type=8-K&dateb=&owner=include&count=20")
 
 
-# ───────────────────────── message ─────────────────────────
+# ───────────────────────── HEADER ─────────────────────────
 def _status(v: AlertView) -> str:
+    """Do tuoi du lieu + thoi diem + vi tri trong phien."""
     if v.session == "CLOSED":
-        return TXT["closed"] + (f" · {v.updated} ET" if v.updated else "")
-    tag = TXT["live"] if v.freshness == "REALTIME" else TXT["delayed"]
-    return tag + (f" {v.updated}" if v.updated else "")
+        tag = TXT["closed"]
+    elif v.session == "PRE":
+        tag = TXT["pre"]
+    elif v.session == "POST":
+        tag = TXT["post"]
+    else:
+        tag = TXT["live"] if v.freshness == "REALTIME" else TXT["delayed"]
+    bits = [tag]
+    if v.updated:
+        bits.append(f"{v.updated} ET")
+    smin = v.session_min or 390
+    if v.session == "LIVE" and v.mso is not None and 0 <= v.mso <= smin:
+        bits.append(f"phút {v.mso}/{smin}")
+    return " · ".join(bits)
+
+
+def _kind_label(v: AlertView) -> str:
+    if v.kind == "UP" and (p := v.prev or {}).get("score"):
+        return f"{TXT['up']} +{v.score - p['score']:.1f}"
+    return {"NEW": TXT["new"], "UP": TXT["up"]}.get(v.kind, TXT["upd"])
+
+
+def render_header(v: AlertView) -> list[str]:
+    lvl = v.level
+    # Dau phan cach mot khoang trang: emoji rat rong, dong 1 de bi xuong dong
+    # tren may hep neu ticker 5 ky tu + gia 3 chu so.
+    return [
+        f"{TXT[f'ico{lvl}']} <b>{esc(v.sym)}</b> · <b>${v.px:.2f}</b>"
+        f" · {_chg_badge(v.chg)}",
+        f"<b>{TXT[f'lvl{lvl}']}</b> · <i>{esc(_kind_label(v))}</i>",
+        f"<code>{_bar(v.score)}</code> <b>{v.score:.1f}</b>/{SCORE_MAX:.0f}",
+        f"<i>{_status(v)}</i>",
+    ]
+
+
+def render_links(v: AlertView) -> list[str]:
+    links = [f'<a href="{tv_url(v.sym)}">{TXT["t_chart"]}</a>',
+             f'<a href="{fviz_url(v.sym)}">{TXT["t_fviz"]}</a>']
+    if (eu := edgar_url(v.cik)):
+        links.append(f'<a href="{esc(eu)}">{TXT["t_sec"]}</a>')
+    return ["🔗 " + " · ".join(links)]
+
+
+# ───────────────────────── lap message ─────────────────────────
+def _blocks(v: AlertView) -> list[tuple[int, list[str]]]:
+    """(uu_tien, cac_dong) cho tung khoi. Uu tien thap bi bo neu qua dai."""
+    out: list[tuple[int, list[str]]] = [(P_HEAD, render_header(v))]
+    if (b := _badges(v)):
+        out.append((P_BADGE, b))
+    if (m := render_metrics(v)):
+        out.append((P_DATA, m))
+    if (r := render_risk(v)):
+        out.append((P_RISK, r))
+    if v.level >= 2 or v.sec_risk >= SEC_MID:
+        out.append((P_SEC, render_sec(v)))
+    if v.detail or v.level == 3:
+        out.append((P_WHY, render_why(v)))
+    if TV_TEXT_LINK:
+        out.append((P_LINK, render_links(v)))
+    # Chan trang khong dung ⚠️ — icon do da la cua section RUI RO.
+    foot = TXT["foot_raw"] if v.freshness == "REALTIME" else TXT["foot_part"]
+    out.append((P_FOOT, [f"<i>{foot}</i>"]))
+    return out
+
+
+def _join(blocks: list[tuple[int, list[str]]]) -> str:
+    lines: list[str] = []
+    for _, blk in blocks:
+        if lines:
+            lines.append("")
+        lines += blk
+    return "\n".join(lines)
+
+
+# Cap tag can dong lai neu buoc phai cat cung. <blockquote khop ca expandable.
+_PAIRS = (("<code>", "</code>"), ("<i>", "</i>"), ("<b>", "</b>"),
+          ("<pre>", "</pre>"), ("<blockquote", "</blockquote>"))
+
+
+def _hard_cut(txt: str) -> str:
+    """Luoi an toan cuoi: cat o ranh gioi dong, roi dong cac tag con ho."""
+    cut = txt[:SAFE_LEN].rsplit("\n", 1)[0]
+    for open_t, close_t in _PAIRS:
+        if cut.count(open_t) > cut.count(close_t):
+            cut += close_t
+    return cut
 
 
 def render_alert(v: AlertView) -> str:
-    lvl = v.level
-    kind = {"NEW": TXT["new"], "UP": TXT["up"]}.get(v.kind, TXT["upd"])
-    if v.kind == "UP" and (p := v.prev or {}).get("score"):
-        kind = f"{TXT['up']} +{v.score - p['score']:.1f}"
-
-    L = [
-        f"{TXT[f'ico{lvl}']} <b>${esc(v.sym)}</b>  ·  <b>${v.px:.2f}</b>",
-        f"{_chg_badge(v.chg)}  ·  <i>{esc(kind)}</i>",
-        "",
-        f"<b>{TXT[f'lvl{lvl}']}</b>",
-        f"<code>{_bar(v.score)}</code> <b>{v.score:.1f}</b>  ·  {_status(v)}",
-        "",
-    ]
-    L += render_metrics(v)
-    for b in _badges(v):
-        L.append(b)
-
-    if (risk := render_risk(v)):
-        L += ["", *risk]
-    if lvl >= 2 or v.sec_risk >= SEC_MID:
-        L += ["", *render_sec(v)]
-    if v.detail or lvl == 3:
-        L += ["", *render_why(v)]
-
-    if TV_TEXT_LINK:
-        links = [f"<a href=\"{tv_url(v.sym)}\">Bieu do</a>",
-                 f"<a href=\"{fviz_url(v.sym)}\">Finviz</a>"]
-        if (eu := edgar_url(v.cik)):
-            links.append(f"<a href=\"{esc(eu)}\">EDGAR</a>")
-        L += ["", "🔗 " + " · ".join(links)]
-
-    foot = TXT["foot_raw"] if v.freshness == "REALTIME" else TXT["foot_part"]
-    L += ["", f"⚠️ <i>{foot}</i>"]
-    return _clamp("\n".join(L))
-
-
-def _clamp(txt: str) -> str:
-    if len(txt) <= SAFE_LEN:
-        return txt
-    txt = re.sub(r"<blockquote[^>]*>.*?</blockquote>\n?", "", txt,
-                 flags=re.S, count=1)
-    return txt[:SAFE_LEN]
+    """Bo TUNG KHOI khi vuot SAFE_LEN, khong cat giua tag HTML nhu truoc."""
+    blocks = _blocks(v)
+    txt = _join(blocks)
+    while len(txt) > SAFE_LEN and len(blocks) > 1:
+        i = min(range(len(blocks)), key=lambda j: (blocks[j][0], -j))
+        blocks.pop(i)
+        txt = _join(blocks)
+    return txt if len(txt) <= SAFE_LEN else _hard_cut(txt)
 
 
 # ───────────────────────── keyboard ─────────────────────────
@@ -418,27 +527,38 @@ def cb(action: str, sym: str, arg: str = "") -> str:
 
 
 def render_keyboard(v: AlertView) -> dict:
-    row1 = [{"text": TXT["k_chart"], "url": tv_url(v.sym)},
-            {"text": TXT["k_fviz"], "url": fviz_url(v.sym)}]
-    if (eu := edgar_url(v.cik)):
-        row1.append({"text": TXT["k_sec"], "url": eu})
-    rows = [row1, [
-        {"text": TXT["k_less"] if v.detail else TXT["k_more"],
-         "callback_data": cb("dtl", v.sym, "0" if v.detail else "1")},
-        {"text": TXT["k_ref"], "callback_data": cb("rf", v.sym)}]]
-    if v.level >= 2:
-        rows.append([
-            {"text": TXT["k_untrack"] if v.tracked else TXT["k_track"],
-             "callback_data": cb("trk", v.sym, "0" if v.tracked else "1")},
-            {"text": TXT["k_wl_on"] if v.watched else TXT["k_wl"],
-             "callback_data": cb("wl", v.sym, "0" if v.watched else "1")}])
+    """3 hang: link ngoai · hanh dong · ho so + theo doi. Toi da 3 nut/hang."""
+    rows = []
+
+    row = [{"text": TXT["k_chart"], "url": tv_url(v.sym)},
+           {"text": TXT["k_fviz"], "url": fviz_url(v.sym)}]
     if v.news_url:
-        rows.append([{"text": TXT["k_news"], "url": v.news_url}])
+        row.append({"text": TXT["k_news"], "url": v.news_url})
+    rows.append(row)
+
+    rows.append([
+        {"text": TXT["k_ref"], "callback_data": cb("rf", v.sym)},
+        {"text": TXT["k_less"] if v.detail else TXT["k_more"],
+         "callback_data": cb("dtl", v.sym, "0" if v.detail else "1")}])
+
+    row = []
+    if (eu := edgar_url(v.cik)):
+        row.append({"text": TXT["k_sec"], "url": eu})
+    if v.level >= 2:
+        row.append({"text": TXT["k_untrack"] if v.tracked else TXT["k_track"],
+                    "callback_data": cb("trk", v.sym,
+                                        "0" if v.tracked else "1")})
+        row.append({"text": TXT["k_wl_on"] if v.watched else TXT["k_wl"],
+                    "callback_data": cb("wl", v.sym,
+                                        "0" if v.watched else "1")})
+    if row:
+        rows.append(row)
     return {"inline_keyboard": rows}
 
 
 def degrade(txt: str, level: int = 1) -> str:
     """1: bo expandable. 2: bo blockquote. 3: strip het tag."""
+    import re
     if level >= 1:
         txt = txt.replace("<blockquote expandable>", "<blockquote>")
     if level >= 2:
@@ -446,3 +566,54 @@ def degrade(txt: str, level: int = 1) -> str:
     if level >= 3:
         txt = re.sub(r"<[^>]+>", "", txt)
     return txt
+
+
+# ───────────────────────── demo ─────────────────────────
+_DEMO = {
+    "sym": "WETO", "px": 10.61, "chg": 0.855, "score": 12.4,
+    "rvol": 66.2, "atr_move": 4.1, "dollar_vol": 311e6,
+    "float_sh": 8.4e6, "float_rot": 3.49, "cik": "0001941158",
+    "freshness": "REALTIME",
+    "explain": "RVOL 66.2× (+4.0) · biên độ 4.1× ATR (+3.3) · "
+               "quay vòng 3.49× (+4.2) · 311 triệu USD (+0.5)",
+}
+_DEMO_SEC = {
+    "risk": 4.5, "n": 7, "earn": True,
+    "detail": [{"form": "424B5", "age": 2, "n": 1,
+                "desc": "đang chào bán cổ phiếu (shelf takedown)"},
+               {"form": "8-K", "age": 1, "n": 3,
+                "desc": "tin trọng yếu"},
+               {"form": "S-3", "age": 46, "n": 1,
+                "desc": "đăng ký kê hàng - có thể bán bất cứ lúc nào"}],
+}
+
+if __name__ == "__main__":
+    import sys
+    try:                      # terminal Windows mac dinh cp1252, khong co dau
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        pass
+
+    cases = [
+        ("L3 · rui ro SEC cao · co snapshot truoc", _DEMO, _DEMO_SEC,
+         {"score": 9.8, "rvol": 53.8, "atr_move": 3.6, "float_rot": 3.19}),
+        ("L2 · sach SEC", {**_DEMO, "score": 8.3, "float_sh": 42e6,
+                           "float_rot": 0.7, "atr_move": 1.8},
+         {"risk": 0.0, "n": 2, "earn": True, "detail": []}, None),
+        ("L1 · penny · khong tra duoc SEC",
+         {**_DEMO, "sym": "ABCD", "score": 7.1, "px": 1.18, "chg": 0.42,
+          "cik": None, "freshness": "~15min", "float_sh": 2.1e6,
+          "float_rot": 2.4}, None, None),
+    ]
+    for title, h, sec, prev in cases:
+        v = AlertView.from_scan(h, sec=sec, prev=prev, kind="NEW",
+                                session="LIVE", updated="15:42", mso=12,
+                                news_url="https://example.com")
+        txt = render_alert(v)
+        print("\n" + "=" * 64)
+        print(f"{title}  ->  level {v.level}, {len(txt)} ky tu")
+        print("=" * 64)
+        print(degrade(txt, 3))          # strip tag cho de doc tren terminal
+        print("-" * 64)
+        for r in render_keyboard(v)["inline_keyboard"]:
+            print("  [" + "] [".join(b["text"] for b in r) + "]")
