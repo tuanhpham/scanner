@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """edgar.py - tra ho so SEC cho cac ma da alert. Tra loi cau hoi 'tai sao'."""
 from __future__ import annotations
+from collections import Counter
 
 import datetime as dt
 import json
@@ -204,14 +205,25 @@ def block(sym: str, max_flags: int = 3) -> list[str]:
     a = assess(sym)
     if a["n"] == 0:
         return ["⚪ Không tra được hồ sơ"]
-    return [label(a["risk"], a.get("earn", False))] + list(a["flags"][:max_flags])
+    cnt = Counter(f["form"] for f in filings(sym))
+    out, seen_form = [], set()
+    for fl in a["flags"]:
+        form = fl.split(" ")[0]
+        if form in seen_form:
+            continue
+        seen_form.add(form)
+        n = cnt.get(form, 1)
+        out.append(fl + (f"  ({n} lần/120 ngày)" if n > 1 else ""))
+        if len(out) >= max_flags:
+            break
+    return [label(a["risk"], a.get("earn", False))] + out
 
 def line(sym: str) -> str:
     """Một dòng ngắn gọn để đặt vào alert Telegram."""
     a = assess(sym)
     if a["n"] == 0:
         return "SEC: không tra được hồ sơ"
-    head = f"SEC: {label(a["risk"], a.get("earn", False))}"
+    head = f"SEC: {label(a['risk'], a.get('earn', False))}"
     return head + ("\n" + "\n".join("· " + f for f in a["flags"][:3])
                    if a["flags"] else "")
 
@@ -219,7 +231,7 @@ def line(sym: str) -> str:
 def _demo(syms: list[str]) -> None:
     for s in syms:
         a = assess(s)
-        print(f"\n=== {s} ===  risk={a['risk']}  {label(a["risk"], a.get("earn", False))}")
+        print(f"\n=== {s} ===  risk={a['risk']}  {label(a['risk'], a.get('earn', False))}")
         if a["n"] == 0:
             print("   ", a.get("note", ""))
             continue
