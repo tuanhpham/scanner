@@ -16,7 +16,15 @@ async def main():
     from clock import SessionClock
     txt = app.fmt(SAMPLE, "NEW", SessionClock())
     print(txt)
+
     n = notifier.from_env()
-    await n.send(txt, key="preview", loud=False)
+    w = asyncio.create_task(n.worker())
+    await n.send(txt, key="preview", cooldown=0)
+    await asyncio.sleep(6)          # cho worker post xong
+    w.cancel()
+    if n.spool:
+        print("!! Telegram tu choi, tin nam trong spool:", len(n.spool))
+    else:
+        print("da gui xong")
 
 asyncio.run(main())
