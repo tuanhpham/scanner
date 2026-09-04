@@ -336,65 +336,69 @@ python render.py     # in 3 alert mẫu (mức 1 / 2 / 3) + layout bàn phím
 Một alert mức 3 trông như sau:
 
 ```
-🚨 WETO · $10.61 · 🟩 ▲ +85.5%          ← HEADER
+🔴 WETO · $10.61 · ▲ +85.5%             ← HEADER
 EXTREME EVENT · Tín hiệu mới
 ██████████ 12.4/12
-🟢 Realtime · 15:42 ET · phút 12/390
+Realtime · 15:42 ET · phút 12/390
 
-🔥 ÁP LỰC FLOAT · 8.4M quay 3.5×        ← BADGE
+⚠️ ÁP LỰC FLOAT                         ← BADGE
 
-📊 SỐ LIỆU                              ← DATA (khối <pre>, cột thẳng hàng)
-── DÒNG TIỀN ───────
-RVOL           66.2×  ▲ 12.4
-Giá trị GD     $311M
-Quay vòng      3.49×  ▲ 0.30
+SỐ LIỆU                                 ← DATA (khối <pre>, ASCII, cột thẳng)
+FLOW
+  RVOL          66.2x  +12.4
+  $ Volume      $311M
+  Turnover      3.49x  +0.30
 
-── BIẾN ĐỘNG ───────
-Biên độ ATR     4.1×  ▲ 0.5
+VOLATILITY
+  ATR move       4.1x  +0.5
 
-── CƠ CẤU ──────────
-Float           8.4M
-Vốn float     $89.1M
+STRUCTURE
+  Float          8.4M
+  Float cap    $89.1M
 
-⚠️ RỦI RO                               ← RISK (blockquote)
-🔴 PHA LOÃNG — CAO
+RỦI RO                                  ← RISK (blockquote)
+PHA LOÃNG — CAO
 Đang chào bán — cổ phiếu mới có thể ra thị trường bất kỳ lúc nào.
 
-🟠 BIẾN ĐỘNG CỰC MẠNH
-Biên độ 4.1× ATR ngày thường.
+BIẾN ĐỘNG CỰC MẠNH
+Biên độ 4.1 lần ATR ngày thường.
 
-📄 HỒ SƠ SEC                            ← SEC (blockquote thu gọn được)
+HỒ SƠ SEC                               ← SEC (blockquote thu gọn được)
 424B5 · 2 ngày trước · đang chào bán cổ phiếu (shelf takedown)
 8-K · 1 ngày trước · tin trọng yếu · 3 lần/120 ngày
 
-🧮 VÌ SAO CÓ TÍN HIỆU                   ← WHY (chỉ hiện ở mức 3 / khi bấm)
+VÌ SAO CÓ TÍN HIỆU                      ← WHY (chỉ hiện ở mức 3 / khi bấm)
 · RVOL 66.2× (+4.0)
 · biên độ 4.1× ATR (+3.3)
 · quay vòng 3.49× (+4.2)
 
 nguồn realtime · quét 15:42 ET · điểm trước 9.8
 
-🔗 Biểu đồ · Finviz · EDGAR             ← LINK (long-press để mở app)
-Dữ liệu thô, chưa kiểm chứng · Không phải lời khuyên đầu tư
+Dữ liệu thô, chưa kiểm chứng · Không phải lời khuyên đầu tư   ← FOOT
 
-[📈 Biểu đồ]  [📊 Finviz]  [📰 Tin]
-[🔄 Cập nhật] [🔎 Chi tiết]
-[📄 SEC]      [🔔 Theo dõi] [⭐ Watchlist]
+[Biểu đồ]   [Finviz]     [Tin]
+[Cập nhật]  [Chi tiết]
+[Hồ sơ SEC] [Theo dõi]   [Watchlist]
 ```
 
 ### Quy ước trình bày
 
-- **8 khối** cố định, luôn đúng thứ tự: HEADER → BADGE → DATA → RISK → SEC →
-  WHY → LINK → FOOT. Khối nào không có dữ liệu thì bỏ hẳn, không để trống.
-- **Ngôn ngữ**: thuật ngữ thị trường giữ tiếng Anh (`RVOL`, `ATR`, `Float`,
-  `WATCH` / `STRONG MOMENTUM` / `EXTREME EVENT`); còn lại tiếng Việt có dấu.
-- **Giá và %thay đổi chỉ xuất hiện một lần**, ở HEADER. Panel số liệu không
-  lặp lại chúng.
-- **Cột trong panel thẳng hàng tuyệt đối**: nhãn 11 ký tự, giá trị canh phải
-  8 ký tự, delta thành cột riêng (`W_LAB`, `W_VAL`, `W_DLT` trong `render.py`).
-- **Emoji không dùng trùng vai**: ⚠️ chỉ dành cho khối RỦI RO, chân trang để trơn.
+- **7 khối** cố định, luôn đúng thứ tự: HEADER → BADGE → DATA → RISK → SEC →
+  WHY → FOOT. Khối nào không có dữ liệu thì bỏ hẳn, không để trống.
+- **Panel `<pre>` chỉ dùng ASCII** — bắt buộc, xem mục 9 để biết tại sao.
+- **Cả tin chỉ 2 emoji**: đèn mức độ ở header (🟡/🟠/🔴) và ⚠️ ở dòng thẻ cảnh
+  báo. Tiêu đề section và nhãn nút để chữ trơn — Telegram đã tự vẽ nền xám cho
+  `<pre>`, vạch dọc cho `blockquote`, và khung cho nút, nên không cần icon.
+- **Ngôn ngữ**: thuật ngữ thị trường + toàn bộ panel giữ tiếng Anh (`RVOL`,
+  `ATR move`, `Float cap`, `WATCH` / `STRONG MOMENTUM` / `EXTREME EVENT`);
+  phần diễn giải là tiếng Việt có dấu.
+- **Không lặp số liệu**: giá và %thay đổi chỉ ở HEADER; thẻ cảnh báo chỉ ghi
+  tên thẻ vì con số đã có trong panel.
+- **Cột trong panel thẳng hàng tuyệt đối**: thụt lề 2, nhãn 11 ký tự, giá trị
+  canh phải 8 ký tự, delta cột riêng (`W_IND`, `W_LAB`, `W_VAL`, `W_DLT`).
+- **Không có dòng link chữ ở cuối** — inline keyboard đã có sẵn các nút đó.
 - **Tin quá 3800 ký tự** → bỏ **cả khối** theo thứ tự ưu tiên
-  (WHY → SEC → LINK → RISK...), không bao giờ cắt giữa tag HTML.
+  (WHY → SEC → RISK → BADGE...), không bao giờ cắt giữa tag HTML.
 
 ### Các nút bấm
 
@@ -402,15 +406,16 @@ Xử lý bởi `callbacks.py`, sửa tin nhắn tại chỗ (không gửi tin m�
 
 | Nút | Việc gì xảy ra |
 |---|---|
-| 🔄 Cập nhật | Chấm điểm lại mã đó ngay, sửa tin nhắn. Cooldown 8s |
-| 🔎 Chi tiết | Mở/thu gọn khối `VÌ SAO` (breakdown điểm số) |
-| 🔔 Theo dõi | Lưu vào bảng `watch` kind=`track`. Chỉ hiện từ mức 2 |
-| ⭐ Watchlist | Lưu vào bảng `watch` kind=`wl`. Chỉ hiện từ mức 2 |
-| 📈 📊 📄 📰 | Link ngoài: TradingView, Finviz, EDGAR, Google News |
+| Cập nhật | Chấm điểm lại mã đó ngay, sửa tin nhắn. Cooldown 8s |
+| Chi tiết | Mở/thu gọn khối `VÌ SAO` (breakdown điểm số) |
+| Theo dõi | Lưu vào bảng `watch` kind=`track`. Chỉ hiện từ mức 2 |
+| Watchlist | Lưu vào bảng `watch` kind=`wl`. Chỉ hiện từ mức 2 |
+| Biểu đồ · Finviz · Tin · Hồ sơ SEC | Link ngoài: TradingView, Finviz, Google News, EDGAR |
 
-Số liệu hiện `▲ 12.4` là **delta so với lần gửi trước** — snapshot lưu trong
-bảng `alert_msg`, so sánh trong `render._delta()`. Chưa có snapshot thì cột
-delta để trống; thay đổi quá nhỏ thì hiện `→`.
+Số ở cột phải panel (`+12.4`) là **delta so với lần gửi trước** — snapshot lưu
+trong bảng `alert_msg`, so sánh trong `render._delta()`. Chưa có snapshot thì
+cột để trống; thay đổi quá nhỏ thì hiện `=`. Cột này cũng là ASCII, vì nằm
+trong `<pre>`.
 
 ---
 
@@ -533,18 +538,37 @@ W_RVOL, W_ATR, W_ROT, W_DV, W_FRESH = 2.2, 1.6, 1.4, 0.5, 1.5
 
 **`render.py`** — hiển thị
 ```python
-SECTION_STYLE = "panel"   # "panel" = 1 khối <pre> | "quote" = blockquote từng nhóm
-T_STRONG, T_EXTREME = 8.0, 12.0   # ngưỡng mức 2 và mức 3
-SCORE_MAX, BAR_CELLS = 12.0, 10   # thang của thanh điểm
-W_LAB, W_VAL, W_DLT = 11, 9, 7    # độ rộng 3 cột trong panel
+T_STRONG, T_EXTREME = 8.0, 12.0        # ngưỡng mức 2 và mức 3
+SCORE_MAX, BAR_CELLS = 12.0, 10        # thang của thanh điểm
+W_IND, W_LAB, W_VAL, W_DLT = 2, 11, 8, 6   # 4 cột trong panel <pre>
 SAFE_LEN = 3800           # vượt ngưỡng này thì bỏ bớt khối
 EXPANDABLE = True         # <blockquote expandable>, cần Bot API >= 7.3
-TV_TEXT_LINK = True       # dòng link chữ ở cuối (long-press mở app)
 ```
 
 Chữ hiển thị nằm gọn trong dict `TXT` ở đầu `render.py` — sửa tên nhãn, tên
 mức, câu cảnh báo ở đó, không phải lần trong code. Thứ tự bỏ khối khi tin quá
 dài do các hằng `P_HEAD ... P_WHY` quyết định (số càng cao càng được giữ lại).
+
+### Hai quy ước trong `render.py` — đừng "sửa" lại
+
+**1. Panel `<pre>` chỉ dùng ASCII.** Font monospace của Telegram không có glyph
+tiếng Việt có dấu. Chữ nào có dấu (`ố`, `ề`, `ộ`, `ữ`…) sẽ rơi sang font khác →
+hiện **nhỏ hơn, lệch cỡ**, và phá vỡ căn cột. Vì vậy nhãn trong panel là thuật
+ngữ tiếng Anh ASCII (`RVOL`, `$ Volume`, `Turnover`, `ATR move`, `Float`,
+`Float cap`). Chữ tiếng Việt có dấu chỉ dùng **ngoài** panel, nơi Telegram dùng
+font UI (đủ glyph). `python render.py` có kiểm tra tự động ở cuối output:
+
+```
+ky tu ngoai ASCII trong panel <pre>: khong co -> OK
+```
+
+Nếu dòng đó liệt kê ký tự nào, đó chính là chữ sẽ bị lệch cỡ trên điện thoại.
+
+**2. Cả tin nhắn chỉ có 2 emoji.** Một đèn báo mức độ ở đầu header
+(🟡 mức 1 · 🟠 mức 2 · 🔴 mức 3 — đỏ là mạnh nhất) làm neo để mắt quét nhanh
+trong danh sách chat, và một dấu ⚠️ mở dòng thẻ cảnh báo. Tiêu đề section dùng
+IN HOA + `<b>`, không emoji. Mục trong khối `RỦI RO` không dùng đèn màu — sẽ
+trùng nghĩa với đèn mức độ ở header.
 
 Nếu đổi chuỗi trong `TXT`, chạy lại `python render.py` để xem cột trong panel
 còn thẳng hàng không — nhãn dài hơn `W_LAB` sẽ đẩy lệch cột giá trị.

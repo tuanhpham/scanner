@@ -3,23 +3,35 @@
 Thuan ham: khong network, khong DB -> test bang dict gia.
     python render.py          # in ra 3 alert mau (L1/L2/L3)
 
-Quy uoc ngon ngu: thuat ngu thi truong giu tieng Anh (RVOL, ATR, Float,
-WATCH / STRONG MOMENTUM / EXTREME EVENT); moi chu con lai la tieng Viet
-CO DAU, dong bo voi mo ta ho so SEC do edgar.py tra ve.
+═══ HAI QUY UOC QUAN TRONG, DUNG "SUA" LAI ═══
+
+1. PANEL <pre> CHI DUNG ASCII.
+   Font monospace cua Telegram khong co glyph tieng Viet co dau. Chu nao co
+   dau (o, e, o, u...) se roi sang font khac -> hien nho hon, lech co, va
+   pha vo can cot. Nen nhan trong panel la thuat ngu tieng Anh ASCII
+   (RVOL, $ Volume, Turnover, ATR move, Float, Float cap). Chu tieng Viet
+   co dau chi dung NGOAI panel, noi Telegram dung font UI (day du glyph).
+
+2. TOI GIAN EMOJI — ca message chi co 2 icon:
+   · 1 den bao muc do o dau header: 🟡 L1 · 🟠 L2 · 🔴 L3 (do = manh nhat).
+     Day la neo de mat quet nhanh trong danh sach chat.
+   · 1 dau ⚠️ mo dong the canh bao, chi khi co canh bao.
+   Tieu de section dung IN HOA + <b>, khong emoji. Muc trong khoi RUI RO
+   khong dung den mau nua — tranh trung nghia voi den muc do o header.
 
 Telegram KHONG ho tro mau chu. Chi co: pre (khoi nen xam),
 blockquote (vach doc ben trai), b/i/u/s/code, emoji.
-Muon "mau" -> dung o vuong mau + tam giac huong.
 
 Cau truc mot alert (moi khoi cach nhau 1 dong trong):
     HEADER   ticker · gia · %thay doi / xep loai · thanh diem / trang thai
-    BADGE    the canh bao ngan (float thap, penny)
-    DATA     panel <pre> 3 nhom so lieu, cot thang hang
+    BADGE    the canh bao, chi ten the (so lieu da nam o panel/header)
+    DATA     panel <pre> 3 nhom so lieu, ASCII, cot thang hang
     RISK     blockquote, tieu de + giai thich
     SEC      blockquote expandable, danh sach ho so
     WHY      blockquote expandable, breakdown diem
-    LINK     mot dong link chu (long-press mo app)
     FOOT     mien tru trach nhiem
+
+Khong con dong link chu o cuoi: inline keyboard da co san cac nut do.
 """
 from __future__ import annotations
 
@@ -28,7 +40,6 @@ from dataclasses import dataclass
 from typing import Any
 
 # ───────────────────────── cau hinh hien thi ─────────────────────────
-SECTION_STYLE = "panel"   # "panel" = <pre> mot khoi | "quote" = blockquote tung nhom
 SCORE_MAX   = 12.0        # diem toi da de ve bar
 BAR_CELLS   = 10
 T_EXTREME   = 12.0
@@ -42,62 +53,55 @@ SEC_MID     = 1.5
 MICRO_PRICE = 1.50
 SAFE_LEN    = 3800        # Telegram cung 4096
 EXPANDABLE  = True        # <blockquote expandable> can Bot API >= 7.3
-TV_TEXT_LINK = True       # them 1 dong link chu cuoi (de long-press mo app)
 
-# Do rong cot trong panel <pre>. Nhan phai <= W_LAB de khong day cot gia tri.
-W_LAB, W_VAL, W_DLT = 11, 9, 7
-PANEL_W = W_LAB + W_VAL
-
-GAIN, LOSS, FLAT = "🟩", "🟥", "⬜"
+# Do rong cot trong panel <pre>. Tat ca nhan phai la ASCII va <= W_LAB.
+W_IND, W_LAB, W_VAL, W_DLT = 2, 11, 8, 6
 
 # Uu tien giu lai khi tin nhan vuot SAFE_LEN — khoi diem thap bi bo truoc.
-P_HEAD, P_FOOT, P_DATA, P_BADGE, P_RISK, P_LINK, P_SEC, P_WHY = 9, 8, 7, 6, 5, 4, 3, 2
+P_HEAD, P_FOOT, P_DATA, P_BADGE, P_RISK, P_SEC, P_WHY = 9, 8, 7, 6, 5, 3, 2
 
 TXT = {
-    # xep loai muc do
+    # xep loai muc do — den mau la emoji DUY NHAT o header
     "lvl1": "WATCH", "lvl2": "STRONG MOMENTUM", "lvl3": "EXTREME EVENT",
-    "ico1": "🟨", "ico2": "🟧", "ico3": "🚨",
+    "ico1": "🟡", "ico2": "🟠", "ico3": "🔴",
     # loai tin
     "new": "Tín hiệu mới", "up": "Tăng điểm", "upd": "Cập nhật",
-    # trang thai du lieu
-    "live": "🟢 Realtime", "delayed": "🟡 Trễ ~15 phút",
-    "pre": "🌙 Trước phiên", "post": "🌆 Sau phiên",
-    "closed": "⚪ Đã đóng phiên",
-    # ten nhom so lieu trong panel
-    "g_flow": "DÒNG TIỀN", "g_vol": "BIẾN ĐỘNG", "g_str": "CƠ CẤU",
-    # tieu de section
-    "h_data": "📊 <b>SỐ LIỆU</b>", "h_risk": "⚠️ <b>RỦI RO</b>",
-    "h_sec": "📄 <b>HỒ SƠ SEC</b>", "h_why": "🧮 <b>VÌ SAO CÓ TÍN HIỆU</b>",
-    # nhan hang trong panel
-    "m_rvol": "RVOL", "m_dvol": "Giá trị GD", "m_rot": "Quay vòng",
-    "m_atr": "Biên độ ATR", "m_float": "Float", "m_fcap": "Vốn float",
+    # trang thai du lieu (ngoai panel -> duoc dung dau)
+    "live": "Realtime", "delayed": "Trễ ~15 phút",
+    "pre": "Trước phiên", "post": "Sau phiên", "closed": "Đã đóng phiên",
+    # ten nhom trong panel — ASCII
+    "g_flow": "FLOW", "g_vol": "VOLATILITY", "g_str": "STRUCTURE",
+    # nhan hang trong panel — ASCII, <= W_LAB ky tu
+    "m_rvol": "RVOL", "m_dvol": "$ Volume", "m_rot": "Turnover",
+    "m_atr": "ATR move", "m_float": "Float", "m_fcap": "Float cap",
+    # tieu de section — in hoa dam, khong emoji
+    "h_data": "<b>SỐ LIỆU</b>", "h_risk": "<b>RỦI RO</b>",
+    "h_sec": "<b>HỒ SƠ SEC</b>", "h_why": "<b>VÌ SAO CÓ TÍN HIỆU</b>",
     # muc rui ro: tieu de + giai thich
     "r_dil_hi": "PHA LOÃNG — CAO", "r_dil_mid": "ĐÃ ĐĂNG KÝ KÊ PHÁT HÀNH",
     "r_vol": "BIẾN ĐỘNG CỰC MẠNH", "r_float": "ÁP LỰC FLOAT",
     "r_micro": "GIÁ THẤP / PENNY", "r_halt": "NGUY CƠ HALT (LULD)",
     "r_dil_hi_n": "Đang chào bán — cổ phiếu mới có thể ra thị trường bất kỳ lúc nào.",
     "r_dil_mid_n": "Có kế hoạch phát hành — không cần báo trước.",
-    "r_vol_n": "Biên độ {a:.1f}× ATR ngày thường.",
-    "r_float_n": "Float {f} · quay {r:.1f}× — sổ lệnh mỏng, giá giật mạnh.",
-    "r_micro_n": "Giá ${p:.2f} — spread rộng, trượt giá lớn.",
+    "r_vol_n": "Biên độ {a:.1f} lần ATR ngày thường.",
+    "r_float_n": "Sổ lệnh mỏng, giá giật mạnh theo cả hai chiều.",
+    "r_micro_n": "Spread rộng, trượt giá lớn khi vào và ra.",
     "r_halt_n": "Biến động {c:+.0f}% trong phiên — dễ bị tạm dừng giao dịch.",
     # ket luan SEC
-    "sec_clean": "🟢 Không thấy dấu hiệu pha loãng",
-    "sec_none": "⚪ Không tra được hồ sơ (thiếu CIK)",
-    "sec_earn": "🔵 Vừa báo cáo kết quả kinh doanh",
-    # the canh bao
-    "b_low_float": "⚠️ FLOAT THẤP", "b_micro_float": "🔥 FLOAT SIÊU NHỎ",
-    "b_press": "🔥 ÁP LỰC FLOAT", "b_penny": "⚠️ PENNY",
+    "sec_clean": "Không thấy dấu hiệu pha loãng",
+    "sec_none": "Không tra được hồ sơ (thiếu CIK)",
+    "sec_earn": "Vừa báo cáo kết quả kinh doanh",
+    # the canh bao — chi ten the, so lieu da co o panel/header
+    "b_low_float": "FLOAT THẤP", "b_micro_float": "FLOAT SIÊU NHỎ",
+    "b_press": "ÁP LỰC FLOAT", "b_penny": "PENNY",
     # chan trang
     "foot_raw": "Dữ liệu thô, chưa kiểm chứng · Không phải lời khuyên đầu tư",
     "foot_part": "Nguồn có thể trễ · Tự xác minh trước khi quyết định",
-    # nhan link chu
-    "t_chart": "Biểu đồ", "t_fviz": "Finviz", "t_sec": "EDGAR",
-    # nhan nut
-    "k_chart": "📈 Biểu đồ", "k_fviz": "📊 Finviz", "k_sec": "📄 SEC",
-    "k_news": "📰 Tin", "k_more": "🔎 Chi tiết", "k_less": "◀ Thu gọn",
-    "k_ref": "🔄 Cập nhật", "k_track": "🔔 Theo dõi", "k_untrack": "🔕 Bỏ theo dõi",
-    "k_wl": "⭐ Watchlist", "k_wl_on": "★ Đã lưu",
+    # nhan nut — chu tran, khong emoji
+    "k_chart": "Biểu đồ", "k_fviz": "Finviz", "k_sec": "Hồ sơ SEC",
+    "k_news": "Tin", "k_more": "Chi tiết", "k_less": "Thu gọn",
+    "k_ref": "Cập nhật", "k_track": "Theo dõi", "k_untrack": "Bỏ theo dõi",
+    "k_wl": "Watchlist", "k_wl_on": "Đã lưu",
 }
 
 CB_VER = "a1"
@@ -133,24 +137,24 @@ def _bar(score: float) -> str:
     return "█" * n + "░" * (BAR_CELLS - n)
 
 
-def _chg_badge(chg: float) -> str:
-    """O vuong mau + tam giac huong — cach duy nhat 'to mau' tren Telegram."""
+def _chg(chg: float) -> str:
+    """Moi alert deu la ma tang (MIN_CHG = +5%) nen khong can o vuong mau."""
     if chg > 0.05:
-        return f"{GAIN} <b>▲ +{chg:.1f}%</b>"
+        return f"▲ +{chg:.1f}%"
     if chg < -0.05:
-        return f"{LOSS} <b>▼ {abs(chg):.1f}%</b>"
-    return f"{FLAT} <b>0.0%</b>"
+        return f"▼ {abs(chg):.1f}%"
+    return "0.0%"
 
 
 def _delta(cur: float | None, prev: float | None, dig: int = 1,
            floor: float = 0.05) -> str:
-    """Thay doi so voi lan gui truoc. Chuoi tran, _prow lo phan can le."""
+    """Thay doi so voi lan gui truoc. ASCII: nam trong panel <pre>."""
     if cur is None or prev is None:
         return ""
     d = cur - prev
     if abs(d) < floor:
-        return "→"
-    return f"{'▲' if d > 0 else '▼'} {abs(d):.{dig}f}"
+        return "="
+    return f"{'+' if d > 0 else '-'}{abs(d):.{dig}f}"
 
 
 def _quote(body: str, expand: bool = False) -> str:
@@ -160,15 +164,9 @@ def _quote(body: str, expand: bool = False) -> str:
 
 
 def _prow(lab: str, val: str, dlt: str = "") -> str:
-    """Mot hang trong panel: nhan trai, gia tri phai, delta cot rieng."""
-    row = f"{lab:<{W_LAB}}{val:>{W_VAL}}"
+    """Mot hang trong panel: thut le, nhan trai, gia tri phai, delta cot rieng."""
+    row = f"{' ' * W_IND}{lab:<{W_LAB}}{val:>{W_VAL}}"
     return f"{row}  {dlt:<{W_DLT}}".rstrip() if dlt else row
-
-
-def _prule(title: str) -> str:
-    """Vach ngan nhom, rong dung bang panel de cac khoi thang hang."""
-    head = f"── {title} "
-    return head + "─" * max(2, PANEL_W - len(head))
 
 
 # ───────────────────────── data model ─────────────────────────
@@ -255,26 +253,27 @@ class AlertView:
 def _groups(v: AlertView) -> list[tuple[str, list[tuple[str, str, str]]]]:
     """[(ten_nhom, [(nhan, gia_tri, delta), ...]), ...] — nhom rong bi bo.
 
-    Gia va %thay doi KHONG nam trong panel: header da hien to va dam roi.
+    TAT CA chuoi tra ve day phai la ASCII: chung di vao khoi <pre>.
+    Gia va %thay doi khong nam trong panel: header da hien to va dam roi.
     """
     p = v.prev or {}
     g: list[tuple[str, list[tuple[str, str, str]]]] = []
 
     rows = []
     if v.rvol:
-        rows.append((TXT["m_rvol"], f"{v.rvol:.1f}×",
+        rows.append((TXT["m_rvol"], f"{v.rvol:.1f}x",
                      _delta(v.rvol, p.get("rvol"))))
     if (dv := _money(v.dollar_vol)):
         rows.append((TXT["m_dvol"], dv, ""))
     if v.float_rot:
-        rows.append((TXT["m_rot"], f"{v.float_rot:.2f}×",
+        rows.append((TXT["m_rot"], f"{v.float_rot:.2f}x",
                      _delta(v.float_rot, p.get("float_rot"), 2)))
     if rows:
         g.append((TXT["g_flow"], rows))
 
     rows = []
     if v.atr_move:
-        rows.append((TXT["m_atr"], f"{v.atr_move:.1f}×",
+        rows.append((TXT["m_atr"], f"{v.atr_move:.1f}x",
                      _delta(v.atr_move, p.get("atr_move"))))
     if rows:
         g.append((TXT["g_vol"], rows))
@@ -290,67 +289,58 @@ def _groups(v: AlertView) -> list[tuple[str, list[tuple[str, str, str]]]]:
 
 
 def render_metrics(v: AlertView) -> list[str]:
-    """Panel so lieu. panel -> mot khoi <pre>; quote -> blockquote tung nhom."""
+    """Mot khoi <pre>: ten nhom o le, cac hang thut vao W_IND ky tu."""
     g = _groups(v)
     if not g:
         return []
-    if SECTION_STYLE == "panel":
-        body: list[str] = []
-        for i, (name, rows) in enumerate(g):
-            if i:
-                body.append("")
-            body.append(_prule(name))
-            body += [_prow(*r) for r in rows]
-        return [TXT["h_data"], f"<pre>{esc(chr(10).join(body))}</pre>"]
-    out: list[str] = [TXT["h_data"]]
-    for name, rows in g:
-        out.append(f"<b>{esc(name)}</b>")
-        out.append(_quote("\n".join(f"<code>{esc(_prow(*r))}</code>"
-                                    for r in rows)))
-    return out
+    body: list[str] = []
+    for i, (name, rows) in enumerate(g):
+        if i:
+            body.append("")
+        body.append(name)
+        body += [_prow(*r) for r in rows]
+    return [TXT["h_data"], f"<pre>{esc(chr(10).join(body))}</pre>"]
 
 
 # ───────────────────────── BADGE: the canh bao ─────────────────────────
 def _badges(v: AlertView) -> list[str]:
-    """Nhan ngan dat NGOAI panel — trong <pre> khong bold/emoji dep duoc."""
-    out = []
+    """Mot dong, mot dau ⚠️, chi ten the — so lieu da co o panel/header."""
+    tags = []
     if v.float_sh and v.float_sh < TINY_FLOAT:
-        out.append(f"{TXT['b_micro_float']} · {_shares(v.float_sh)}")
+        tags.append(TXT["b_micro_float"])
     elif v.low_float and (v.float_rot or 0) >= 2.0:
-        out.append(f"{TXT['b_press']} · {_shares(v.float_sh)} quay "
-                   f"{v.float_rot:.1f}×")
+        tags.append(TXT["b_press"])
     elif v.low_float:
-        out.append(f"{TXT['b_low_float']} · {_shares(v.float_sh)}")
+        tags.append(TXT["b_low_float"])
     if v.px and v.px < MICRO_PRICE:
-        out.append(f"{TXT['b_penny']} · ${v.px:.2f}")
-    return out
+        tags.append(TXT["b_penny"])
+    return [f"⚠️ <b>{esc(' · '.join(tags))}</b>"] if tags else []
 
 
 # ───────────────────────── RISK ─────────────────────────
 def render_risk(v: AlertView, max_items: int = 3) -> list[str]:
-    items: list[tuple[int, str, str, str]] = []
+    """Muc da sap theo do nghiem trong nen khong can den mau danh dau."""
+    items: list[tuple[int, str, str]] = []
     if v.sec_risk >= SEC_HIGH:
-        items.append((3, "🔴", TXT["r_dil_hi"], TXT["r_dil_hi_n"]))
+        items.append((3, TXT["r_dil_hi"], TXT["r_dil_hi_n"]))
     elif v.sec_risk >= SEC_MID:
-        items.append((2, "🟠", TXT["r_dil_mid"], TXT["r_dil_mid_n"]))
+        items.append((2, TXT["r_dil_mid"], TXT["r_dil_mid_n"]))
     if (v.atr_move or 0) >= HOT_ATR:
-        items.append((2, "🟠", TXT["r_vol"], TXT["r_vol_n"].format(a=v.atr_move)))
+        items.append((2, TXT["r_vol"], TXT["r_vol_n"].format(a=v.atr_move)))
     if v.low_float and (v.float_rot or 0) >= 2.0:
-        items.append((2, "🟠", TXT["r_float"],
-                      TXT["r_float_n"].format(f=_shares(v.float_sh),
-                                              r=v.float_rot)))
+        items.append((2, TXT["r_float"], TXT["r_float_n"]))
     if v.px and v.px < MICRO_PRICE:
-        items.append((1, "🟡", TXT["r_micro"], TXT["r_micro_n"].format(p=v.px)))
+        items.append((1, TXT["r_micro"], TXT["r_micro_n"]))
     if abs(v.chg) >= 40 and (v.rvol or 0) >= 10 and v.session in ("LIVE", "PRE"):
-        items.append((1, "🟡", TXT["r_halt"], TXT["r_halt_n"].format(c=v.chg)))
+        items.append((1, TXT["r_halt"], TXT["r_halt_n"].format(c=v.chg)))
     if not items:
         return []
     items.sort(key=lambda x: -x[0])
     body = []
-    for i, (_, ico, title, note) in enumerate(items[:max_items]):
+    for i, (_, title, note) in enumerate(items[:max_items]):
         if i:
             body.append("")
-        body.append(f"{ico} <b>{esc(title)}</b>")
+        body.append(f"<b>{esc(title)}</b>")
         body.append(f"<i>{esc(note)}</i>")
     return [TXT["h_risk"], _quote("\n".join(body))]
 
@@ -371,7 +361,7 @@ def _sec_lines(v: AlertView) -> list[str]:
 
 
 def render_sec(v: AlertView) -> list[str]:
-    """Rui ro cao -> chi liet ke ho so, vi section RISK da ket luan giup.
+    """Rui ro cao -> chi liet ke ho so, vi khoi RUI RO da ket luan giup.
     Rui ro thap -> can mot dong ket luan, khong thi nguoi doc phai tu suy."""
     if not v.has_sec:
         return [TXT["h_sec"], f"<i>{TXT['sec_none']}</i>"]
@@ -446,23 +436,13 @@ def _kind_label(v: AlertView) -> str:
 
 def render_header(v: AlertView) -> list[str]:
     lvl = v.level
-    # Dau phan cach mot khoang trang: emoji rat rong, dong 1 de bi xuong dong
-    # tren may hep neu ticker 5 ky tu + gia 3 chu so.
     return [
         f"{TXT[f'ico{lvl}']} <b>{esc(v.sym)}</b> · <b>${v.px:.2f}</b>"
-        f" · {_chg_badge(v.chg)}",
+        f" · <b>{_chg(v.chg)}</b>",
         f"<b>{TXT[f'lvl{lvl}']}</b> · <i>{esc(_kind_label(v))}</i>",
         f"<code>{_bar(v.score)}</code> <b>{v.score:.1f}</b>/{SCORE_MAX:.0f}",
         f"<i>{_status(v)}</i>",
     ]
-
-
-def render_links(v: AlertView) -> list[str]:
-    links = [f'<a href="{tv_url(v.sym)}">{TXT["t_chart"]}</a>',
-             f'<a href="{fviz_url(v.sym)}">{TXT["t_fviz"]}</a>']
-    if (eu := edgar_url(v.cik)):
-        links.append(f'<a href="{esc(eu)}">{TXT["t_sec"]}</a>')
-    return ["🔗 " + " · ".join(links)]
 
 
 # ───────────────────────── lap message ─────────────────────────
@@ -479,9 +459,6 @@ def _blocks(v: AlertView) -> list[tuple[int, list[str]]]:
         out.append((P_SEC, render_sec(v)))
     if v.detail or v.level == 3:
         out.append((P_WHY, render_why(v)))
-    if TV_TEXT_LINK:
-        out.append((P_LINK, render_links(v)))
-    # Chan trang khong dung ⚠️ — icon do da la cua section RUI RO.
     foot = TXT["foot_raw"] if v.freshness == "REALTIME" else TXT["foot_part"]
     out.append((P_FOOT, [f"<i>{foot}</i>"]))
     return out
@@ -511,7 +488,7 @@ def _hard_cut(txt: str) -> str:
 
 
 def render_alert(v: AlertView) -> str:
-    """Bo TUNG KHOI khi vuot SAFE_LEN, khong cat giua tag HTML nhu truoc."""
+    """Bo TUNG KHOI khi vuot SAFE_LEN, khong cat giua tag HTML."""
     blocks = _blocks(v)
     txt = _join(blocks)
     while len(txt) > SAFE_LEN and len(blocks) > 1:
@@ -588,6 +565,7 @@ _DEMO_SEC = {
 }
 
 if __name__ == "__main__":
+    import re
     import sys
     try:                      # terminal Windows mac dinh cp1252, khong co dau
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -616,4 +594,15 @@ if __name__ == "__main__":
         print(degrade(txt, 3))          # strip tag cho de doc tren terminal
         print("-" * 64)
         for r in render_keyboard(v)["inline_keyboard"]:
-            print("  [" + "] [".join(b["text"] for b in r) + "]")
+            print("  [ " + " ] [ ".join(b["text"] for b in r) + " ]")
+
+    # Canh bao ngay neu co ky tu ngoai ASCII lot vao panel <pre>: do la
+    # nguyen nhan chu tieng Viet bi lech co font tren Telegram.
+    print("\n" + "=" * 64)
+    bad = set()
+    for title, h, sec, prev in cases:
+        v = AlertView.from_scan(h, sec=sec, prev=prev)
+        for blk in re.findall(r"<pre>(.*?)</pre>", render_alert(v), re.S):
+            bad |= {c for c in blk if ord(c) > 127}
+    print("ky tu ngoai ASCII trong panel <pre>:",
+          " ".join(sorted(bad)) if bad else "khong co -> OK")
