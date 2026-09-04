@@ -11,18 +11,21 @@ import argparse
 import asyncio
 import datetime as dt
 import sqlite3
+import time
 import traceback
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import edgar
 import notifier as notif_mod
+import render
 import scorer
+import store
+import tgapi
 import universe_live
+from callbacks import Callbacks
 from clock import DE, SessionClock
 from notifier import esc
-
-import edgar
-import render
 
 ROOT = Path(__file__).resolve().parent
 DB = ROOT / "state" / "baseline.db"
@@ -33,18 +36,15 @@ ALERT_SCORE = 7.0
 ESCALATE_DELTA = 3.0   # diem tang thap nay -> gui lai
 COOLDOWN = 540         # 9 phut moi ma
 MAX_ALERTS = 45        # tran moi phien, chong spam
-SEC_RISK_MAX = 3.0      # risk >= nguong nay -> tru diem
-SEC_PENALTY  = 2.0
-MIN_MSO      = 5        # bo qua alert trong 5 phut dau phien
-BAD_SUFFIX   = ("W", "WS", "R", "RT", "U", "UN", "PR")
+SEC_RISK_MAX = 3.0     # risk >= nguong nay -> tru diem
+SEC_PENALTY = 2.0
+MIN_MSO = 5            # bo qua alert trong 5 phut dau phien
+BAD_SUFFIX = ("W", "WS", "R", "RT", "U", "UN", "PR")
 
-
-def junk_ticker(s: str) -> bool:
-    s = (s or "").upper()
-    if "." in s or "-" in s:
-        suf = s.replace("-", ".").partition(".")[2]
-        return suf in BAD_SUFFIX
-    return len(s) == 5 and s[-1] in ("W", "R", "U")
+# Trang thai dung chung cho nut Refresh (callbacks chay ngoai vong scan).
+_ST: "State | None" = None
+_CK: SessionClock | None = None
+_SENT: dict[str, float] = {}     # sym -> lan gui gan nhat (cooldown)
 
 DDL = """
 CREATE TABLE IF NOT EXISTS alerts (
@@ -73,8 +73,23 @@ class State:
 def log(msg: str) -> None:
     print(f"[{dt.datetime.now(DE):%H:%M:%S}] {msg}", flush=True)
 
-def restore_today(st) -> int:
-    """Nap lai cac ma da alert hom nay tu DB -> restart giua phien khong bao trung."""
+
+def junk_ticker(s: str) -> bool:
+    s = (s or "").upper()
+    if "." in s or "-" in s:
+        suf = s.replace("-", ".").partition(".")[2]
+        return suf in BAD_SUFFIX
+    return len(s) == 5 and s[-1] in ("W", "R", "U")
+
+
+def db() -> sqlite3.Connection:
+    con = sqlite3.connect(DB)
+    con.executescript(DDL)
+    return con
+
+
+def restore_today(st: State) -> int:
+    """Nap lai cac ma da alert hom nay -> restart giua phien khong bao trung."""
     if st.day is None:
         return 0
     try:
@@ -92,11 +107,6 @@ def restore_today(st) -> int:
         st.n_alerts += int(cnt)
     return len(rows)
 
-def db() -> sqlite3.Connection:
-    con = sqlite3.connect(DB)
-    con.executescript(DDL)
-    return con
-
 
 def loud_mode(score: float) -> bool:
     """Gio Duc: 09-17h im lang (dang lam viec), sau 17h moi reo."""
@@ -106,22 +116,85 @@ def loud_mode(score: float) -> bool:
     return True
 
 
-def fmt(h: dict, kind: str, ck: SessionClock) -> str:
+# ---------------- render + gui ----------------
+_SESS = {"PREMARKET": "PRE", "PRE": "PRE", "AFTERHOURS": "POST",
+         "POST": "POST", "CLOSED": "CLOSED", "OPEN": "LIVE",
+         "REGULAR": "LIVE", "RTH": "LIVE", "LIVE": "LIVE"}
+
+
+def session_state(ck: SessionClock | None) -> str:
+    try:
+        s = (ck.state() or "").upper()
+    except Exception:  # noqa: BLE001
+        return "LIVE"
+    return _SESS.get(s, "LIVE" if (ck.mso() or 0) > 0 else "CLOSED")
+
+
+def build_view(h: dict, kind: str, ck: SessionClock | None = None,
+               detail: bool = False) -> render.AlertView:
+    """Dict tu scorer -> AlertView day du (SEC, delta, watchlist)."""
+    ck = ck or _CK
     try:
         sec = edgar.assess(h["sym"])
     except Exception:  # noqa: BLE001
         sec = None
-    upd = ""
+    upd, mso = "", None
     try:
         upd = ck.now_et(dt.datetime.now(dt.timezone.utc)).strftime("%H:%M")
+        mso = ck.mso()
     except Exception:  # noqa: BLE001
+        pass
+    try:
+        tracked, watched = store.watch_state(DB, h["sym"])
+        prev = store.get_snap(DB, h["sym"])
+    except Exception as e:  # noqa: BLE001
+        log(f"store doc loi {h['sym']}: {e}")
+        tracked, watched, prev = False, False, None
+    return render.AlertView.from_scan(
+        h, sec=sec, prev=prev, kind=kind, session=session_state(ck),
+        updated=upd, mso=mso, detail=detail, tracked=tracked, watched=watched,
+        news_url=f"https://www.google.com/search?q={h['sym']}+stock&tbm=nws")
+
+
+def fmt(h: dict, kind: str, ck: SessionClock) -> str:
+    """Giu lai cho tuong thich - chi tra ve text, khong nut."""
+    return render.render_alert(build_view(h, kind, ck))
+
+
+async def tg_send(n, v: render.AlertView, loud: bool) -> bool:
+    """Gui kem nut qua tgapi. That bai -> ve notifier cu (co spool, khong nut)."""
+    now = time.time()
+    if now - _SENT.get(v.sym, 0) < COOLDOWN:
+        log(f"{v.sym}: trong cooldown, bo qua")
+        return False
+    txt = render.render_alert(v)
+    mid = await tgapi.send(txt, markup=render.render_keyboard(v), loud=loud)
+    if mid:
+        _SENT[v.sym] = now
         try:
-            upd = ck.now_et().strftime("%H:%M")
-        except Exception:  # noqa: BLE001
-            upd = ""
-    v = render.AlertView.from_scan(h, sec=sec, kind=kind,
-                                   updated=upd, mso=ck.mso())
-    return render.render_alert(v)
+            store.put_msg(DB, v.sym, mid, v.snapshot())
+        except Exception as e:  # noqa: BLE001
+            log(f"store ghi loi {v.sym}: {e}")
+        return True
+    if n is None:
+        return False
+    log(f"{v.sym}: tgapi that bai -> gui qua notifier, khong co nut")
+    ok = await n.send(txt, key=v.sym, loud=loud, cooldown=COOLDOWN)
+    if ok:
+        _SENT[v.sym] = now
+    return ok
+
+
+async def refresh_one(sym: str) -> dict | None:
+    """Cham diem lai mot ma khi nguoi dung bam Refresh."""
+    if _ST is None or _CK is None:
+        return None
+    row = (_ST.universe or {}).get(sym)
+    if row is None:
+        return None                      # ngoai phien / khong con trong universe
+    hits, _ = await asyncio.to_thread(scorer.rank, {sym: row}, _ST.base, _CK)
+    return hits[0] if hits else None
+
 
 # ---------------- cac vong lap ----------------
 async def loop_universe(st: State, ck: SessionClock) -> None:
@@ -176,8 +249,9 @@ async def loop_score(st: State, n, ck: SessionClock, dry: bool) -> None:
                             log(f"{sym}: SEC risk {_a['risk']} -> tru "
                                 f"{SEC_PENALTY} diem, con {h['score']:.1f}")
                             if h["score"] < ALERT_SCORE:
-                                st.seen[sym] = {"best": h["score"],
-                                                "alerts": prev["alerts"] if prev else 0}
+                                st.seen[sym] = {
+                                    "best": h["score"],
+                                    "alerts": prev["alerts"] if prev else 0}
                                 continue
                     except Exception:  # noqa: BLE001
                         h["sec_risk"] = None
@@ -186,14 +260,11 @@ async def loop_score(st: State, n, ck: SessionClock, dry: bool) -> None:
 
                     st.seen[sym] = {"best": h["score"],
                                     "alerts": (prev["alerts"] + 1) if prev else 1}
-                    txt = fmt(h, kind, ck)
+                    v = build_view(h, kind, ck)
                     if dry:
-                        log(f"[DRY {kind}] {sym} {h['score']:.1f}")
+                        log(f"[DRY {kind}] {sym} {h['score']:.1f} L{v.level}")
                     else:
-                        ok = await n.send(txt, key=sym,
-                                          loud=loud_mode(h["score"]),
-                                          cooldown=COOLDOWN)
-                        if not ok:
+                        if not await tg_send(n, v, loud_mode(h["score"])):
                             continue
                     st.n_alerts += 1
                     con.execute(
@@ -207,7 +278,7 @@ async def loop_score(st: State, n, ck: SessionClock, dry: bool) -> None:
                          h["freshness"], ",".join(h["sources"])))
                     con.commit()
                     log(f"ALERT {kind} {sym} score={h['score']:.1f} "
-                        f"rvol={h['rvol']:.1f}x")
+                        f"rvol={h['rvol']:.1f}x L{v.level}")
 
                 if st.scans % 8 == 1:
                     log(f"scan#{st.scans} qua_loc={rej.get('_qua_loc', 0)} "
@@ -229,12 +300,12 @@ async def loop_clock(st: State, n, ck: SessionClock, dry: bool) -> None:
                 st.n_alerts = 0
                 st.scans = 0
                 st.errors = 0
+                _SENT.clear()
                 st.base = await asyncio.to_thread(scorer.load_baseline)
                 log(f"=== ngay moi {st.day} | baseline {len(st.base)} ma ===")
                 k = restore_today(st)
                 if k:
                     log(f"khoi phuc {k} ma da alert hom nay ({st.n_alerts} alert)")
-
 
             state = ck.state()
 
@@ -276,8 +347,14 @@ async def loop_clock(st: State, n, ck: SessionClock, dry: bool) -> None:
 
 
 async def run(dry: bool, once: bool) -> None:
+    global _ST, _CK
+
     ck = SessionClock()
     st = State()
+    _ST, _CK = st, ck
+    tgapi.log = log
+    db().close()                     # tao bang alerts ngay tu dau
+
     st.base = await asyncio.to_thread(scorer.load_baseline)
     log(ck.describe().replace("\n", " | "))
     log(f"baseline {len(st.base)} ma | dry={dry}")
@@ -294,7 +371,7 @@ async def run(dry: bool, once: bool) -> None:
             log(f"  {h['sym']:<6} {h['score']:>5.1f}  rvol {h['rvol']:.1f}x")
         if hits and not dry:
             h = hits[0]
-            await n.send(fmt(h, "NEW", ck), loud=True)
+            await tg_send(n, build_view(h, "NEW", ck), True)
             await n.q.join()
             now = dt.datetime.now(dt.timezone.utc)
             con = db()
@@ -321,9 +398,12 @@ async def run(dry: bool, once: bool) -> None:
         asyncio.create_task(loop_universe(st, ck)),
         asyncio.create_task(loop_score(st, n, ck, dry)),
     ]
+    if not dry:
+        tasks.append(asyncio.create_task(Callbacks(
+            DB, refresh_one,
+            lambda h, kind, detail: build_view(h, kind, None, detail),
+            log=log).run()))
     await asyncio.gather(*tasks)
-    db().close()   # tao bang alerts ngay tu dau, ke ca khi chay --once
-
 
 
 if __name__ == "__main__":
@@ -335,4 +415,3 @@ if __name__ == "__main__":
         asyncio.run(run(a.dry, a.once))
     except KeyboardInterrupt:
         log("dung boi nguoi dung")
-

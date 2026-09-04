@@ -1,86 +1,199 @@
-"""store.py — trạng thái nhỏ dùng chung, ghi vào state/baseline.db (đã WAL)."""
+"""store.py — trang thai nho dung chung: message_id, snapshot, watchlist, offset.
+
+Ghi vao state/baseline.db (da bat WAL) trong 3 bang rieng, khong dinh
+gi toi bang `base` cua prep.py hay bang `alerts` cua main.py.
+
+  alert_msg  sym + ngay -> message_id + so lieu lan truoc (de tinh delta)
+  watch      danh sach theo doi / watchlist
+  kv         cap khoa-gia tri, hien dung cho tg_offset cua getUpdates
+
+Moi ham deu bat loi va tra ve gia tri mac dinh: DB phu nay hong thi
+alert van phai gui duoc.
+"""
 from __future__ import annotations
 
 import datetime as dt
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
+log = print          # main.py co the gan lai: store.log = log
+
 DDL = """
+PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS alert_msg(
   sym TEXT, day TEXT, message_id INTEGER, snap TEXT, ts TEXT,
   PRIMARY KEY(sym, day));
 CREATE TABLE IF NOT EXISTS watch(
-  sym TEXT PRIMARY KEY, kind TEXT, ts TEXT);
+  sym TEXT, kind TEXT, ts TEXT, PRIMARY KEY(sym, kind));
 CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT);
 """
 
 
 def _con(db: str | Path) -> sqlite3.Connection:
-    c = sqlite3.connect(str(db), timeout=10)
+    Path(db).parent.mkdir(parents=True, exist_ok=True)
+    c = sqlite3.connect(str(db), timeout=15)
+    c.execute("PRAGMA busy_timeout=15000")
     c.executescript(DDL)
     return c
 
 
+def _now() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+
+
 def _today() -> str:
-    return dt.date.today().isoformat()
+    """Ngay theo gio ET: alert cua phien nao thi thuoc ngay do."""
+    try:
+        from zoneinfo import ZoneInfo
+        return dt.datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+    except Exception:                                            # noqa: BLE001
+        return dt.date.today().isoformat()
 
 
+# ───────────────────────── alert_msg ─────────────────────────
 def put_msg(db, sym: str, message_id: int, snap: dict | None = None) -> None:
-    with _con(db) as c:
-        c.execute("INSERT INTO alert_msg(sym,day,message_id,snap,ts) "
-                  "VALUES(?,?,?,?,?) ON CONFLICT(sym,day) DO UPDATE SET "
-                  "message_id=excluded.message_id, snap=excluded.snap, "
-                  "ts=excluded.ts",
-                  (sym, _today(), message_id, json.dumps(snap or {}),
-                   dt.datetime.now(dt.timezone.utc).isoformat()))
+    """Ghi message_id sau khi gui alert, kem snapshot so lieu."""
+    try:
+        with closing(_con(db)) as c, c:
+            c.execute(
+                "INSERT INTO alert_msg(sym,day,message_id,snap,ts) "
+                "VALUES(?,?,?,?,?) ON CONFLICT(sym,day) DO UPDATE SET "
+                "message_id=excluded.message_id, snap=excluded.snap, "
+                "ts=excluded.ts",
+                (sym, _today(), int(message_id),
+                 json.dumps(snap or {}, ensure_ascii=False), _now()))
+    except Exception as e:                                       # noqa: BLE001
+        log(f"store.put_msg {sym}: {type(e).__name__}: {e}")
 
 
 def put_snap(db, sym: str, snap: dict) -> None:
-    with _con(db) as c:
-        c.execute("UPDATE alert_msg SET snap=? WHERE sym=? AND day=?",
-                  (json.dumps(snap), sym, _today()))
+    """Cap nhat snapshot sau khi Refresh, giu nguyen message_id."""
+    try:
+        with closing(_con(db)) as c, c:
+            n = c.execute(
+                "UPDATE alert_msg SET snap=?, ts=? WHERE sym=? AND day=?",
+                (json.dumps(snap or {}, ensure_ascii=False), _now(),
+                 sym, _today())).rowcount
+            if not n:      # chua co dong nao (vd alert gui qua notifier cu)
+                c.execute(
+                    "INSERT INTO alert_msg(sym,day,message_id,snap,ts) "
+                    "VALUES(?,?,?,?,?)",
+                    (sym, _today(), 0,
+                     json.dumps(snap or {}, ensure_ascii=False), _now()))
+    except Exception as e:                                       # noqa: BLE001
+        log(f"store.put_snap {sym}: {type(e).__name__}: {e}")
 
 
 def get_msg(db, sym: str) -> tuple[int | None, dict | None]:
-    with _con(db) as c:
-        r = c.execute("SELECT message_id, snap FROM alert_msg "
-                      "WHERE sym=? AND day=?", (sym, _today())).fetchone()
+    """(message_id, snapshot) cua alert hom nay. (None, None) neu chua co."""
+    try:
+        with closing(_con(db)) as c:
+            r = c.execute("SELECT message_id, snap FROM alert_msg "
+                          "WHERE sym=? AND day=?", (sym, _today())).fetchone()
+    except Exception as e:                                       # noqa: BLE001
+        log(f"store.get_msg {sym}: {type(e).__name__}: {e}")
+        return None, None
     if not r:
         return None, None
+    mid = r[0] or None
     try:
-        return r[0], json.loads(r[1] or "{}")
-    except Exception:                                        # noqa: BLE001
-        return r[0], None
+        return mid, json.loads(r[1] or "{}")
+    except Exception:                                            # noqa: BLE001
+        return mid, None
 
 
 def get_snap(db, sym: str) -> dict | None:
+    """Snapshot lan truoc, de render.py ve mui ten delta."""
     return get_msg(db, sym)[1] or None
 
 
+def purge_msg(db, keep_days: int = 7) -> int:
+    """Don dong cu hon keep_days. Goi luc sang ngay moi, khong bat buoc."""
+    cut = (dt.date.today() - dt.timedelta(days=keep_days)).isoformat()
+    try:
+        with closing(_con(db)) as c, c:
+            return c.execute("DELETE FROM alert_msg WHERE day < ?",
+                             (cut,)).rowcount
+    except Exception as e:                                       # noqa: BLE001
+        log(f"store.purge_msg: {type(e).__name__}: {e}")
+        return 0
+
+
+# ───────────────────────── watch ─────────────────────────
 def set_watch(db, sym: str, kind: str, on: bool) -> None:
-    with _con(db) as c:
-        if on:
-            c.execute("INSERT OR REPLACE INTO watch VALUES(?,?,?)",
-                      (sym, kind, dt.datetime.now(dt.timezone.utc).isoformat()))
-        else:
-            c.execute("DELETE FROM watch WHERE sym=? AND kind=?", (sym, kind))
+    """kind: 'track' (theo doi trong phien) hoac 'wl' (watchlist)."""
+    try:
+        with closing(_con(db)) as c, c:
+            if on:
+                c.execute("INSERT OR REPLACE INTO watch(sym,kind,ts) "
+                          "VALUES(?,?,?)", (sym, kind, _now()))
+            else:
+                c.execute("DELETE FROM watch WHERE sym=? AND kind=?",
+                          (sym, kind))
+    except Exception as e:                                       # noqa: BLE001
+        log(f"store.set_watch {sym}: {type(e).__name__}: {e}")
 
 
 def watch_state(db, sym: str) -> tuple[bool, bool]:
-    """(tracked, watched)"""
-    with _con(db) as c:
-        rows = {r[0] for r in c.execute(
-            "SELECT kind FROM watch WHERE sym=?", (sym,))}
+    """(tracked, watched) — dung de dat nhan cho hai nut."""
+    try:
+        with closing(_con(db)) as c:
+            rows = {r[0] for r in c.execute(
+                "SELECT kind FROM watch WHERE sym=?", (sym,))}
+    except Exception as e:                                       # noqa: BLE001
+        log(f"store.watch_state {sym}: {type(e).__name__}: {e}")
+        return False, False
     return "track" in rows, "wl" in rows
 
 
+def watch_list(db, kind: str = "wl") -> list[str]:
+    """Danh sach ma dang theo doi, moi nhat truoc."""
+    try:
+        with closing(_con(db)) as c:
+            return [r[0] for r in c.execute(
+                "SELECT sym FROM watch WHERE kind=? ORDER BY ts DESC",
+                (kind,))]
+    except Exception as e:                                       # noqa: BLE001
+        log(f"store.watch_list: {type(e).__name__}: {e}")
+        return []
+
+
+# ───────────────────────── kv ─────────────────────────
 def get_kv(db, k: str, default: str = "") -> str:
-    with _con(db) as c:
-        r = c.execute("SELECT v FROM kv WHERE k=?", (k,)).fetchone()
-    return r[0] if r else default
+    try:
+        with closing(_con(db)) as c:
+            r = c.execute("SELECT v FROM kv WHERE k=?", (k,)).fetchone()
+    except Exception as e:                                       # noqa: BLE001
+        log(f"store.get_kv {k}: {type(e).__name__}: {e}")
+        return default
+    return r[0] if r and r[0] is not None else default
 
 
-def set_kv(db, k: str, v: str) -> None:
-    with _con(db) as c:
-        c.execute("INSERT OR REPLACE INTO kv VALUES(?,?)", (k, str(v)))
+def set_kv(db, k: str, v) -> None:
+    try:
+        with closing(_con(db)) as c, c:
+            c.execute("INSERT OR REPLACE INTO kv(k,v) VALUES(?,?)",
+                      (k, str(v)))
+    except Exception as e:                                       # noqa: BLE001
+        log(f"store.set_kv {k}: {type(e).__name__}: {e}")
+
+
+if __name__ == "__main__":
+    import sys
+    d = sys.argv[1] if len(sys.argv) > 1 else str(
+        Path(__file__).resolve().parent / "state" / "baseline.db")
+    put_msg(d, "_TEST", 999, {"score": 8.3, "rvol": 66.2})
+    print("get_msg :", get_msg(d, "_TEST"))
+    put_snap(d, "_TEST", {"score": 9.1, "rvol": 70.0})
+    print("get_snap:", get_snap(d, "_TEST"))
+    set_watch(d, "_TEST", "wl", True)
+    print("watch   :", watch_state(d, "_TEST"), watch_list(d))
+    set_watch(d, "_TEST", "wl", False)
+    set_kv(d, "_test_kv", 42)
+    print("kv      :", get_kv(d, "_test_kv"))
+    with closing(_con(d)) as c, c:
+        c.execute("DELETE FROM alert_msg WHERE sym='_TEST'")
+        c.execute("DELETE FROM kv WHERE k='_test_kv'")
+    print("dọn sạch, ok")
