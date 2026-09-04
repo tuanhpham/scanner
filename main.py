@@ -106,7 +106,7 @@ def loud_mode(score: float) -> bool:
 
 
 def fmt(h: dict, kind: str, ck: SessionClock) -> str:
-    icon = {"NEW": "🔴", "UP": "⬆️"}.get(kind, "🔵")
+    bar = "🟥" if h["score"] >= 12 else "🟧" if h["score"] >= 9 else "🟨"
     tag = {"NEW": "TÍN HIỆU MỚI", "UP": "TĂNG ĐIỂM"}.get(kind, "CẬP NHẬT")
     chg = (h["chg"] or 0) * 100
     mso = ck.mso()
@@ -114,18 +114,20 @@ def fmt(h: dict, kind: str, ck: SessionClock) -> str:
              else "🟡 trễ ~15 phút")
 
     dv = h.get("dollar_vol") or 0
-    dv_txt = f"{dv / 1e9:.2f} tỷ" if dv >= 1e9 else f"{dv / 1e6:.0f} triệu"
+    rot = h.get("float_rot") or 0
     flt = f"{h['float_sh'] / 1e6:.1f} triệu CP" if h.get("float_sh") else "không rõ"
-    rot = f" · đã quay {h['float_rot']:.2f}×" if h.get("float_rot") else ""
 
     L = [
-        f"{icon} <b>${esc(h['sym'])}</b>  <b>{chg:+.1f}%</b>  ${h['px']:.2f}",
+        f"{bar} <b>${esc(h['sym'])}</b>  <b>{chg:+.1f}%</b>  ${h['px']:.2f}",
         f"<i>{tag}</i> · điểm <b>{h['score']:.1f}</b> · phút {mso}/390 · {fresh}",
         "",
-        f"📊 RVOL <b>{h['rvol']:.1f}×</b> so với trung bình 20 ngày",
-        f"📈 Biên độ {h['atr_move']:.1f}× ATR ngày",
-        f"💵 Giá trị giao dịch {dv_txt} USD",
-        f"🔄 Lưu hành tự do {flt}{rot}",
+        "<pre>"
+        f"RVOL      {h['rvol']:>8.1f}×\n"
+        f"Biên độ   {h['atr_move']:>8.1f}× ATR\n"
+        f"Giá trị   {dv / 1e6:>8.0f} triệu $\n"
+        f"Quay vòng {rot:>8.2f}×"
+        "</pre>",
+        f"Lưu hành tự do: {flt}",
     ]
 
     try:
@@ -133,8 +135,8 @@ def fmt(h: dict, kind: str, ck: SessionClock) -> str:
     except Exception:  # noqa: BLE001
         sec = []
     if sec:
-        L += ["", "📄 <b>Hồ sơ SEC</b>"]
-        L += [f"    {esc(x)}" for x in sec]
+        L += ["", "📄 <b>Hồ sơ SEC</b>",
+              "<blockquote>" + "\n".join(esc(x) for x in sec) + "</blockquote>"]
 
     L += [
         "",
@@ -143,13 +145,12 @@ def fmt(h: dict, kind: str, ck: SessionClock) -> str:
         f"<a href=\"https://finviz.com/quote.ashx?t={h['sym']}\">Finviz</a> · "
         f"<a href=\"https://stockanalysis.com/stocks/{h['sym']}/\">Phân tích</a>"
         + (f" · <a href=\"https://www.sec.gov/cgi-bin/browse-edgar?"
-           f"action=getcompany&CIK={h['cik']}&type=8-K&dateb=&owner=include"
-           f"&count=10\">EDGAR</a>" if h.get("cik") else ""),
+           f"action=getcompany&amp;CIK={h['cik']}&amp;type=8-K&amp;dateb=&amp;"
+           f"owner=include&amp;count=10\">EDGAR</a>" if h.get("cik") else ""),
         "",
         "⚠️ <i>Dữ liệu thô, chưa kiểm chứng. Tự xác minh trước khi quyết định.</i>",
     ]
     return "\n".join(L)
-
 
 # ---------------- cac vong lap ----------------
 async def loop_universe(st: State, ck: SessionClock) -> None:
