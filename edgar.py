@@ -11,9 +11,11 @@ import time
 from pathlib import Path
 
 import httpx
+from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+ROOT = Path(__file__).resolve().parent
+load_dotenv(ROOT / ".env")
 
 ROOT = Path(__file__).resolve().parent
 DB = ROOT / "state" / "baseline.db"
