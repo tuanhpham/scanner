@@ -466,6 +466,48 @@ Chi tiết cần biết:
 - Nếu bạn đã bấm Thu gọn ở một mã mức 3, lần tự cập nhật sau sẽ mở lại khối
   `VÌ SAO` — trạng thái thu gọn không được lưu vào DB.
 
+### Nút Biểu đồ — mở app TradingView thay vì web
+
+Mặc định URL là `https://www.tradingview.com/chart/?symbol={sym}`. Đây là một
+https URL thường, và **bot không thể ép nó mở app**: trường `url` của
+`InlineKeyboardButton` trong Bot API chỉ nhận "HTTP or `tg://` URL", nên đặt
+`tradingview://…` vào đó sẽ bị trả `Bad Request: inline keyboard button URL is
+invalid`. Nhét vào `<a href>` trong nội dung tin cũng bị lọc y hệt.
+
+Việc mở app hay không do **universal link** (iOS) / **app link** (Android)
+quyết định — tức là do TradingView khai báo đường dẫn nào trong
+`apple-app-site-association` / `assetlinks.json` của họ. Hai điều kiện:
+
+1. Telegram phải **không** dùng trình duyệt nội bộ (Settings → mục có chữ
+   *browser*). Nếu còn bật, webview nuốt link và không bao giờ bàn giao cho OS.
+2. Đường dẫn trong URL phải nằm trong danh sách TradingView khai báo.
+
+Nếu ChatGPT mở được app mà TradingView không, thì điều kiện 1 đã đạt và vấn đề
+là điều kiện 2. Vì vậy URL này **cấu hình được** — đặt `TV_URL` trong `.env`
+với `{sym}` là chỗ điền mã, rồi thử tới khi mở được app:
+
+```bash
+TV_URL=https://www.tradingview.com/symbols/{sym}/
+```
+
+Cách tìm dạng đúng nhanh nhất, không cần chạy bot: mở app Ghi chú trên điện
+thoại, dán từng URL vào rồi bấm, xem cái nào nhảy sang app TradingView.
+
+`python render.py` in ra URL đang dùng và **cảnh báo nếu scheme không phải
+http(s)/tg**, vì lỗi đó làm Telegram từ chối *cả* tin nhắn, không chỉ cái nút.
+
+Nếu hoá ra chỉ `tradingview://` mở được app, cách duy nhất là dựng một
+**endpoint chuyển hướng**: một URL https của bạn trả HTTP 302 sang
+`tradingview://…`. Telegram nhận https, trình duyệt hệ thống theo redirect,
+OS thấy scheme lạ và bàn giao cho app. Bạn có Oracle VM nên chạy được, nhưng
+cần mở port, có tên miền và TLS — công sức thật, không phải sửa vài dòng.
+
+Ghi chú liên quan: URL hiện chỉ ghi `?symbol=WETO`, **không có sàn**, nên
+TradingView phải tự đoán và có thể mở sai mã khi ticker trùng giữa các sàn.
+Alpaca đã trả về sàn ở `prep.py:70` (`a.exchange`) nhưng chỉ dùng để lọc rồi
+bỏ đi. Muốn có `NASDAQ:WETO` hay `/symbols/NASDAQ-WETO/` thì phải thêm cột
+`exchange` vào bảng `base` và chạy lại `prep.py`.
+
 ### Nút Hỏi ChatGPT
 
 Là một link thường (`url` button) tới `https://chatgpt.com/?q=<prompt>`, với

@@ -62,6 +62,15 @@ EXPANDABLE  = True        # <blockquote expandable> can Bot API >= 7.3
 CHATGPT_GPT_ID = os.getenv("CHATGPT_GPT_ID", "").strip()
 ASK_MAX = 700             # do dai prompt truoc khi encode; URL dai de bi cat
 
+# Mau URL cho nut Bieu do. {sym} = ma chung khoan.
+# De trong .env de thu cac dang link khac ma khong phai sua code: TradingView
+# chi mo app khi duong dan nam trong danh sach ho khai bao (universal link),
+# va ta khong biet chac ho khai nhung duong dan nao. Xem README muc 6.
+# LUU Y: Telegram chi nhan http(s):// hoac tg:// -> khong dat tradingview://
+# truc tiep vao day, nut se bi API tu choi.
+TV_URL = os.getenv("TV_URL", "").strip() \
+    or "https://www.tradingview.com/chart/?symbol={sym}"
+
 # Do rong cot trong panel <pre>. Tat ca nhan phai la ASCII va <= W_LAB.
 W_IND, W_LAB, W_VAL, W_DLT = 2, 11, 8, 6
 
@@ -401,7 +410,12 @@ def render_why(v: AlertView) -> list[str]:
 
 # ───────────────────────── URL ─────────────────────────
 def tv_url(sym: str) -> str:
-    return f"https://www.tradingview.com/chart/?symbol={sym}"
+    try:
+        return TV_URL.format(sym=sym)
+    except (KeyError, IndexError, ValueError):
+        # TV_URL trong .env viet sai (dau { le) -> ve mac dinh, dung de mot
+        # loi cau hinh lam chet moi alert.
+        return f"https://www.tradingview.com/chart/?symbol={sym}"
 
 
 def fviz_url(sym: str) -> str:
@@ -667,6 +681,16 @@ if __name__ == "__main__":
             v = AlertView.from_scan({**_DEMO, "score": sc}, sec=sec, detail=d)
             print(f"nut Chi tiet {tag} detail={d!s:<5} -> khoi WHY hien:",
                   TXT["h_why"] in render_alert(v))
+
+    # Telegram chi nhan http(s):// va tg:// cho nut url. Scheme khac -> API
+    # tra 400 va CA alert khong gui duoc, nen phai chan ngay tu day.
+    tu = tv_url("WETO")
+    print(f"\nURL Bieu do: {tu}")
+    if not tu.startswith(("http://", "https://", "tg://")):
+        print("  [X] Telegram chi nhan http(s):// hoac tg:// -> nut se bi tu "
+              "choi. Sua TV_URL trong .env.")
+    if tu == "https://www.tradingview.com/chart/?symbol=WETO":
+        print("  (dang dung mau mac dinh; dat TV_URL trong .env de thu dang khac)")
 
     # URL nut ChatGPT: URL qua dai se bi trinh duyet/Telegram cat.
     v = AlertView.from_scan(_DEMO, sec=_DEMO_SEC)
