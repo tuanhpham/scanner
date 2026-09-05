@@ -163,12 +163,15 @@ Hồ sơ mới (≤5 ngày) tính đủ trọng số, cũ hơn chỉ tính 30–
 
 ---
 
-## 4. Cài đặt
+## 4. Cài đặt trên máy của bạn (chạy thử trước)
+
+Làm bước này trước khi thuê VM. Nếu chạy được ở máy nhà thì lên server chỉ là
+lặp lại y hệt, và bạn biết chắc lỗi (nếu có) là do server chứ không do code.
 
 ### Yêu cầu
 
-- **Python 3.11+** (dùng `zoneinfo`, cú pháp `X | None`) — repo này test trên 3.14
-- Tài khoản **Alpaca** miễn phí → https://alpaca.markets (lấy API key ở phần Paper Trading)
+- **Python 3.11+** (dùng `zoneinfo`, cú pháp `X | None`) — repo test trên 3.12 và 3.14
+- Tài khoản **Alpaca** miễn phí → https://alpaca.markets (lấy key ở phần Paper Trading)
 - **Bot Telegram** → chat với [@BotFather](https://t.me/BotFather), gửi `/newbot`
 - Không cần Docker, không cần database server. Tất cả nằm trong 1 file SQLite.
 
@@ -178,11 +181,11 @@ Hồ sơ mới (≤5 ngày) tính đủ trọng số, cũ hơn chỉ tính 30–
 git clone https://github.com/tuanhpham/scanner.git
 cd scanner
 
-python -m venv .venv
-source .venv/Scripts/activate     # Git Bash trên Windows
-# .venv\Scripts\activate          # CMD / PowerShell
-# source .venv/bin/activate       # Linux / macOS
+python3 -m venv .venv
+source .venv/bin/activate         # Linux / macOS
+# source .venv/Scripts/activate   # Git Bash trên Windows
 
+pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
@@ -206,6 +209,10 @@ ALPACA_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 # BẮT BUỘC — SEC yêu cầu User-Agent có tên thật + email thật
 SEC_UA=Ten Cua Ban email@domain.com
 
+# TUỲ CHỌN — nút Biểu đồ và nút Hỏi ChatGPT, xem mục 6
+TV_URL=https://www.tradingview.com/chart/?symbol={sym}
+CHATGPT_GPT_ID=
+
 # Không dùng trong code hiện tại, để trống được
 FINNHUB_KEY=
 ANTHROPIC_API_KEY=
@@ -216,7 +223,7 @@ GROQ_KEY=
 `https://api.telegram.org/bot<TG_TOKEN>/getUpdates` trên browser, tìm
 `"chat":{"id":...}`.
 
-**`SEC_UA` phải có ký tự `@`** — code kiểm tra điều này. SEC sẽ chặn IP nếu
+**`SEC_UA` phải có ký tự `@`** — code kiểm tra điều này. SEC chặn IP nếu
 User-Agent không hợp lệ. Đây không phải secret, chỉ là quy định của SEC.
 
 ### Bước 3 — Kiểm tra kết nối
@@ -224,9 +231,8 @@ User-Agent không hợp lệ. Đây không phải secret, chỉ là quy định 
 ```bash
 python clock.py                      # in trạng thái phiên hiện tại
 python scripts/check_calendar.py     # lịch phiên 60 ngày tới theo giờ Đức
+python render.py                     # in 3 alert mẫu, không cần mạng
 ```
-
-Nếu `clock.py` in ra được giờ phiên → thư viện đã cài đúng.
 
 ### Bước 4 — Dựng baseline
 
@@ -234,12 +240,7 @@ Nếu `clock.py` in ra được giờ phiên → thư viện đã cài đúng.
 
 ```bash
 python prep.py --limit 300     # ~1 phút, đủ để kiểm tra pipeline
-```
-
-Nếu chạy ổn thì làm thật:
-
-```bash
-python prep.py                 # ~5000 mã, mất 20–40 phút
+python prep.py                 # thật: ~5000 mã, 20–40 phút
 ```
 
 Kết quả mong đợi: `XONG: 4xxx ma cap nhat, 4xxx ma trong DB, ...`
@@ -252,25 +253,22 @@ python scripts/mark_etf.py
 
 **Không được bỏ bước này.** `scorer.load_baseline()` query
 `... FROM base WHERE is_etf=0`, nhưng `prep.py` không tạo cột `is_etf` —
-chính `mark_etf.py` mới `ALTER TABLE` thêm cột đó. Bỏ qua bước này thì
-`main.py` sẽ chết ngay với lỗi `sqlite3.OperationalError: no such column: is_etf`.
+chính `mark_etf.py` mới `ALTER TABLE` thêm cột đó. Bỏ qua thì `main.py` chết
+ngay với `sqlite3.OperationalError: no such column: is_etf`.
 
 Kết quả mong đợi: `ETF/test: 3xxx | co phieu thuong: 4xxx | thieu CIK: xxx`
 
 ### Bước 6 — Chạy thử 1 lần
 
 ```bash
-python main.py --once
+python main.py --dry --once    # quét 1 lần, in ra terminal, KHÔNG gửi Telegram
+python main.py --once          # quét 1 lần, gửi mã điểm cao nhất lên Telegram
 ```
 
-Lệnh này quét 1 lần, in top 5 mã, gửi mã điểm cao nhất lên Telegram, rồi thoát.
-**Chạy trong giờ phiên (15:30–22:00 giờ Đức)** mới có dữ liệu thật.
+**Chạy trong giờ phiên (15:30–22:00 giờ Đức)** mới có dữ liệu thật. Nếu tin
+nhắn vào được Telegram và nút bấm phản hồi → xong, sẵn sàng lên server.
 
-Nếu tin nhắn vào được Telegram → xong, mọi thứ đã hoạt động.
-
----
-
-## 5. Chạy
+### Ba chế độ chạy
 
 ```bash
 python main.py           # chạy thật, 24/7, tự bật/tắt theo lịch NYSE
@@ -284,48 +282,451 @@ python main.py --once    # quét 1 lần rồi thoát
 Bot khởi động lại giữa phiên vẫn an toàn: `restore_today()` đọc lại bảng
 `alerts` của hôm nay để không gửi trùng.
 
-### Chạy nền dài hạn
+⚠️ **Chỉ được có đúng một tiến trình `main.py` sống cùng lúc.** Telegram chỉ
+cho một consumer gọi `getUpdates`; chạy hai cái sẽ ra `getUpdates 409` và
+vòng lặp nút bấm chết. Khi service đã chạy trên VM thì **đừng** đồng thời
+chạy `python main.py` trên máy nhà bằng cùng `TG_TOKEN`.
 
-**Linux (systemd)** — `/etc/systemd/system/scanner.service`:
+---
+
+## 5. Chạy 24/7 trên Oracle Cloud (miễn phí)
+
+Bot cần sống liên tục để bắt kịp phiên Mỹ, mà để laptop mở 24/7 thì không
+thực tế. Oracle Cloud **Always Free** cho VM Arm dùng vĩnh viễn không mất phí,
+mạnh hơn cần thiết rất nhiều.
+
+Toàn bộ mục này mất khoảng **1 giờ** cho lần đầu, trong đó 30–40 phút là ngồi
+chờ `prep.py`.
+
+### 5.0 Bot này cần server cỡ nào?
+
+Rất nhỏ. Nó chủ yếu ngồi chờ HTTP response:
+
+| Tài nguyên | Cần thực tế | Always Free cho |
+|---|---|---|
+| CPU | ~2–5% của 1 core | 2 OCPU (Arm Ampere A1) |
+| RAM | ~250–400 MB | 12 GB |
+| Đĩa | ~1 GB (DB ~150 MB + log) | 47 GB boot, tổng 200 GB |
+| Băng thông | vài trăm MB/tháng | 10 TB/tháng |
+| Port mở vào | **không cần cái nào** | — |
+
+Điểm cuối quan trọng: bot chỉ tạo kết nối **đi ra** (Alpaca, Yahoo, SEC,
+Telegram). Không có web server, không có webhook — Telegram được gọi bằng
+long-polling `getUpdates`. Nên **không cần mở port nào trong firewall**, và
+đừng tự ý sửa firewall (dễ tự khoá mất SSH).
+
+Cấu hình đề xuất: `VM.Standard.A1.Flex`, **1 OCPU / 6 GB RAM**, Ubuntu 24.04.
+Chỉ lấy một nửa quota Always Free, để dành nửa còn lại cho một VM thứ hai
+(ví dụ máy test, hoặc endpoint redirect ở mục 6).
+
+### 5.1 Tạo tài khoản Oracle Cloud
+
+1. Vào https://www.oracle.com/cloud/free/ → **Start for free**.
+2. Cần **thẻ tín dụng/debit để xác minh danh tính** — Oracle giữ ~1 EUR rồi
+   hoàn lại. Tài khoản Always Free **không** tự động trừ tiền khi hết credit
+   dùng thử: hết 300 USD credit (30 ngày) thì tài khoản rơi về Always Free và
+   chỉ những tài nguyên trong hạn mức miễn phí còn sống.
+3. ⚠️ **Chọn Home Region cẩn thận — không đổi được về sau.** Máy Always Free
+   bắt buộc nằm trong home region.
+   - **Germany Central (Frankfurt)** nếu bạn ở Đức: SSH nhanh, log/giờ dễ đối chiếu.
+   - Một region Mỹ (**US East Ashburn**, **US West Phoenix**) cho latency thấp
+     hơn tới Alpaca/Yahoo/SEC.
+   
+   Với vòng quét 25 giây thì chênh 100 ms là vô nghĩa — chọn Frankfurt cho dễ
+   quản lý. Điều thực sự khác biệt giữa các region là **còn máy A1 trống hay
+   không** (xem 5.9).
+4. Xác minh email, đặt mật khẩu, bật **MFA** khi được hỏi.
+
+### 5.2 Tạo VM
+
+Trong Console: **Menu ☰ → Compute → Instances → Create instance**.
+
+| Trường | Chọn |
+|---|---|
+| Name | `scanner` |
+| Compartment | để mặc định (root) |
+| Placement / Availability domain | thử **AD-1**; hết máy thì đổi AD-2, AD-3 |
+| Image | **Change image → Canonical Ubuntu → 24.04** (`Minimal` cũng được) |
+| Shape | **Change shape → Ampere → VM.Standard.A1.Flex** → 1 OCPU, 6 GB |
+| Networking | **Create new VCN** (wizard tự làm subnet + gateway) |
+| Public IPv4 address | **Assign** ← bắt buộc, không có thì không SSH được |
+| Boot volume | để mặc định 47 GB |
+| SSH keys | **Generate a key pair for me** → **tải cả 2 file về** |
+
+Ảnh Ubuntu trên OCI có nhãn **"Always Free-eligible"** — cứ nhìn nhãn đó để
+chắc không phát sinh phí.
+
+⚠️ File private key tải về **chỉ tải được một lần duy nhất**. Lưu nó vào
+`~/.ssh/` và đổi quyền ngay, nếu không SSH sẽ từ chối:
+
+```bash
+mv ~/Downloads/ssh-key-*.key ~/.ssh/oracle_scanner
+chmod 600 ~/.ssh/oracle_scanner
+```
+
+Bấm **Create**. Sau ~1 phút state chuyển **RUNNING**, copy **Public IP address**.
+
+### 5.3 SSH vào máy
+
+User của ảnh Ubuntu là `ubuntu` (không phải `root`, không phải `opc`):
+
+```bash
+ssh -i ~/.ssh/oracle_scanner ubuntu@<PUBLIC_IP>
+```
+
+Đỡ phải nhớ, thêm vào `~/.ssh/config` trên máy bạn:
+
+```
+Host scanner
+    HostName <PUBLIC_IP>
+    User ubuntu
+    IdentityFile ~/.ssh/oracle_scanner
+    ServerAliveInterval 60
+```
+
+Từ giờ chỉ cần `ssh scanner`.
+
+### 5.4 Chuẩn bị Ubuntu
+
+Chạy trên VM. **Bước timezone là quan trọng nhất, đừng bỏ.**
+
+```bash
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y python3-venv python3-dev build-essential git sqlite3 tmux
+```
+
+`python3-dev` + `build-essential` là để dự phòng: máy Arm (aarch64) đôi khi
+thiếu wheel dựng sẵn cho một thư viện nào đó và pip phải tự biên dịch.
+
+```bash
+sudo timedatectl set-timezone Europe/Berlin
+timedatectl        # kiểm tra "System clock synchronized: yes"
+```
+
+Vì sao Europe/Berlin: `clock.py` quy đổi phiên NYSE sang **giờ Đức**, và
+`main.loud_mode()` dùng khung 09–17h giờ Đức để quyết định có đổ chuông không.
+Để VM ở UTC (mặc định) thì giờ trong log lệch 1–2 tiếng so với những gì bạn
+đọc trong alert, và bất kỳ chỗ nào trong code dùng giờ local sẽ sai. Dòng
+`System clock synchronized: yes` cũng cần đúng: `vprofile.py` tính RVOL theo
+**phút thứ mấy của phiên**, lệch đồng hồ là lệch RVOL.
+
+Máy 6 GB RAM không cần swap. Nếu bạn buộc phải dùng shape `E2.1.Micro`
+(1 GB RAM) thì thêm 2 GB swap:
+
+```bash
+sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
+sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+### 5.5 Lấy code và cài đặt
+
+```bash
+cd ~
+git clone https://github.com/tuanhpham/scanner.git
+cd scanner
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+Repo private thì dùng **deploy key**: `ssh-keygen -t ed25519 -C scanner-vm`
+trên VM, dán `~/.ssh/id_ed25519.pub` vào GitHub → repo → Settings → Deploy keys
+(chỉ cần quyền read), rồi clone bằng URL dạng `git@github.com:...`.
+
+Tạo `.env` trên VM — **đừng commit nó vào git**, gõ lại bằng tay:
+
+```bash
+nano .env      # dán nội dung .env ở mục 4, Ctrl+O, Enter, Ctrl+X
+chmod 600 .env
+```
+
+Kiểm tra nhanh:
+
+```bash
+python clock.py     # phải in ra trạng thái phiên và giờ Đức
+python render.py    # phải in 3 alert mẫu
+```
+
+### 5.6 Dựng baseline lần đầu — chạy trong `tmux`
+
+`prep.py` mất 20–40 phút. SSH đứt giữa lúc đó sẽ giết tiến trình và bạn phải
+làm lại từ đầu. Dùng `tmux`:
+
+```bash
+tmux new -s prep
+source .venv/bin/activate
+python prep.py && python scripts/mark_etf.py
+```
+
+Bấm **Ctrl+B** rồi **D** để rời ra (tiến trình vẫn chạy). Tắt máy tính, đi ăn
+cơm, quay lại `ssh scanner && tmux attach -t prep` để xem đã xong chưa.
+
+Xong thì phải thấy:
+
+```
+XONG: 4xxx ma cap nhat, 4xxx ma trong DB, ...
+ETF/test: 3xxx | co phieu thuong: 4xxx | thieu CIK: xxx
+```
+
+Rồi thử một lần thật (nếu đang trong phiên):
+
+```bash
+python main.py --dry --once     # log ra terminal, không gửi gì
+python main.py --once           # gửi 1 alert lên Telegram
+```
+
+### 5.7 Chạy tự động bằng systemd
+
+Đây là phần "tự chạy": systemd bật bot khi máy boot, và bật lại nếu bot chết.
+
+```bash
+sudo nano /etc/systemd/system/scanner.service
+```
 
 ```ini
 [Unit]
-Description=Stock Scanner
+Description=Stock Scanner (Telegram alert bot)
+Wants=network-online.target
 After=network-online.target
 
 [Service]
-WorkingDirectory=/duong/dan/scanner
-ExecStart=/duong/dan/scanner/.venv/bin/python main.py
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/scanner
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ubuntu/scanner/.venv/bin/python main.py
 Restart=always
 RestartSec=30
-StandardOutput=append:/duong/dan/scanner/service.log
-StandardError=append:/duong/dan/scanner/service.log
+StandardOutput=append:/home/ubuntu/scanner/state/service.log
+StandardError=append:/home/ubuntu/scanner/state/service.log
 
 [Install]
 WantedBy=multi-user.target
 ```
 
+Từng dòng đáng chú ý:
+
+- `User=ubuntu` — chạy dưới user thường, không cần root. Nếu để trống, service
+  chạy bằng root và sẽ ghi file `state/*.db` thuộc quyền root; sau đó bạn chạy
+  tay bằng user `ubuntu` sẽ bị `unable to open database file`.
+- `PYTHONUNBUFFERED=1` — không có nó, Python đệm stdout và log chỉ hiện ra
+  từng khối 4 KB, `tail -f` trông như bot bị treo.
+- `Restart=always` + `RestartSec=30` — mất mạng, Alpaca 500, Python traceback:
+  bot chết thì 30 giây sau sống lại. `restore_today()` chống gửi trùng nên
+  restart giữa phiên là an toàn.
+- `Wants/After=network-online.target` — chờ có mạng mới khởi động, tránh
+  crash-loop lúc máy vừa boot.
+
+Bật lên:
+
 ```bash
-sudo systemctl enable --now scanner
-journalctl -u scanner -f
+sudo systemctl daemon-reload
+sudo systemctl enable --now scanner     # enable = tự bật khi boot
+sudo systemctl status scanner           # phải thấy "active (running)"
+tail -f ~/scanner/state/service.log     # Ctrl+C để thoát xem log
 ```
 
-**Windows** — Task Scheduler, trigger "At startup", action:
-`C:\...\scanner\.venv\Scripts\python.exe C:\...\scanner\main.py`
+Trong log phải xuất hiện dòng `callbacks: bat dau lang nghe nut bam`. Nếu thấy
+`getUpdates 409` thì đang có tiến trình `main.py` thứ hai ở đâu đó:
 
-### Lịch chạy `prep.py` hàng ngày
+```bash
+ps aux | grep -v grep | grep main.py    # còn tiến trình lạc nào không
+```
 
-`prev_close` và `adv20` phải mới, nếu không điểm số vô nghĩa. Chạy lúc
-**08:00 ET** (14:00 giờ Đức), tức trước phiên:
+Bốn lệnh cần nhớ:
+
+```bash
+sudo systemctl restart scanner    # sau khi git pull
+sudo systemctl stop scanner       # trước khi chạy main.py bằng tay
+sudo systemctl start scanner
+journalctl -u scanner -n 50       # log của systemd (crash trước khi vào file)
+```
+
+### 5.8 Chạy `prep.py` hằng ngày bằng cron
+
+`prev_close` và `adv20` phải là số của hôm qua, không thì điểm vô nghĩa. Chạy
+lúc **08:00 ET**, trước phiên và sau khi Yahoo đã chốt nến ngày hôm trước.
+
+```bash
+crontab -e         # chọn nano nếu nó hỏi
+```
 
 ```cron
-0 8 * * 1-5  cd /duong/dan/scanner && .venv/bin/python prep.py >> prep.log 2>&1
-0 9 * * 1-5  cd /duong/dan/scanner && .venv/bin/python scripts/mark_etf.py >> prep.log 2>&1
+CRON_TZ=America/New_York
+0 8 * * 1-5  cd /home/ubuntu/scanner && .venv/bin/python prep.py >> state/prep.log 2>&1
+0 9 * * 1-5  cd /home/ubuntu/scanner && .venv/bin/python scripts/mark_etf.py >> state/prep.log 2>&1
+5 9 * * 1-5  /usr/bin/systemctl restart scanner
 ```
 
-`prep.py` chạy lại an toàn (idempotent, dùng `ON CONFLICT DO UPDATE`).
-Nó cũng tự bỏ nến của ngày hôm nay nếu đang chạy giữa phiên — nến chưa chốt
-sẽ làm `prev_close = giá hiện tại` → `chg` và `atr_move` = 0 trên toàn DB.
+`CRON_TZ=America/New_York` là mẹo đáng giá: cron sẽ tự xử lý lệch DST. Không
+có nó, bạn phải viết `0 14` (giờ Đức) và lịch sẽ trôi 1 tiếng trong hai tuần
+tháng 3 và tháng 10 khi Mỹ và EU đổi giờ lệch ngày nhau — đúng những tuần
+`prep.py` dễ chạy nhầm vào giữa phiên nhất.
+
+Ba dòng, theo thứ tự: dựng baseline (08:00 ET, xong khoảng 08:40), gắn cờ ETF
+(09:00 ET), rồi restart service (09:05 ET, trước giờ mở 09:30). Dòng restart
+là để chắc chắn bot nạp baseline mới; nếu bạn xác nhận
+`scorer.load_baseline()` tự nạp lại theo chu kỳ thì bỏ dòng đó đi. Để lại
+cũng vô hại.
+
+Nếu bạn muốn quét cả premarket sớm, đẩy `prep.py` lên `0 6` — nhưng nhớ là
+nến ngày hôm trước của Yahoo phải đã chốt.
+
+Kiểm tra cron có chạy thật:
+
+```bash
+crontab -l                        # xem lịch đã lưu
+grep CRON /var/log/syslog | tail  # cron có kích hoạt job không
+tail -20 ~/scanner/state/prep.log # job in ra gì
+```
+
+⚠️ `crontab -e` phải chạy bằng user `ubuntu`, **không** `sudo crontab -e` —
+cron của root sẽ không tìm thấy venv và tạo file thuộc quyền root trong `state/`.
+
+### 5.9 Xoay vòng log
+
+`service.log` chạy 24/7 sẽ phình dần. Ba dòng cấu hình cho gọn:
+
+```bash
+sudo nano /etc/logrotate.d/scanner
+```
+
+```
+/home/ubuntu/scanner/state/*.log {
+    weekly
+    rotate 4
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
+```
+
+`copytruncate` là bắt buộc ở đây: bot giữ file log mở suốt, nếu logrotate đổi
+tên file thì bot vẫn ghi vào inode cũ và log mới trống trơn. `copytruncate`
+copy nội dung ra rồi cắt file tại chỗ, bot không cần biết gì.
+
+```bash
+sudo logrotate -d /etc/logrotate.d/scanner   # -d = chạy thử, không sửa gì
+```
+
+### 5.10 Cập nhật code về sau
+
+```bash
+ssh scanner
+cd ~/scanner
+git pull
+source .venv/bin/activate
+pip install -r requirements.txt        # chỉ khi requirements.txt đổi
+python -c "import main, render, scorer, callbacks"   # bắt lỗi syntax/import trước
+sudo systemctl restart scanner
+tail -20 state/service.log
+```
+
+Dòng `python -c "import ..."` đáng làm: import lỗi thì systemd sẽ
+crash-loop mỗi 30 giây và bạn phải mò trong `journalctl`, trong khi chạy
+import tay nó in traceback ra ngay.
+
+Sửa `render.py` thì thêm `python render.py` trước khi restart — nó in 3 alert
+mẫu và tự kiểm tra panel `<pre>` còn thuần ASCII hay không (xem mục 9).
+
+### 5.11 Sao lưu
+
+Ít việc hơn bạn tưởng. `base` và `meta` được `prep.py` dựng lại mỗi ngày, mất
+cũng chỉ tốn 40 phút chạy lại. Thứ thật sự không thay lại được là **`.env`** —
+lưu nó vào password manager, xong.
+
+Muốn giữ lịch sử alert để phân tích về sau thì backup bảng `alerts` mỗi tuần.
+Dùng `.backup` của sqlite3, đừng `cp` file `.db` khi bot đang chạy (WAL đang
+bật, copy thô có thể ra file hỏng):
+
+```bash
+mkdir -p ~/backup
+sqlite3 ~/scanner/state/baseline.db ".backup '/home/ubuntu/backup/baseline-$(date +%F).db'"
+```
+
+### 5.12 Bốn cạm bẫy của Oracle Always Free
+
+**"Out of host capacity" khi tạo VM.** Lỗi hay gặp nhất, và không phải lỗi của
+bạn: region đó tạm hết máy A1 trống. Cách xử lý, theo thứ tự nên thử:
+
+1. Đổi **Availability Domain** (AD-1 → AD-2 → AD-3) rồi thử lại.
+2. Hạ xuống **1 OCPU / 6 GB** — dễ có chỗ hơn 2 OCPU / 12 GB.
+3. Thử lại vào giờ thấp điểm của region đó (đêm theo giờ địa phương).
+4. Nâng tài khoản lên **Pay As You Go**. Tài nguyên trong hạn mức Always Free
+   vẫn miễn phí sau khi nâng, nhưng tài khoản PAYG được ưu tiên capacity nên
+   thường tạo được ngay. Đặt **compartment quota** hoặc **budget alert** để
+   chắc không vô tình tạo thêm tài nguyên có phí.
+5. Bí quá thì dùng tạm hai VM `VM.Standard.E2.1.Micro` (x86, 1 GB RAM) —
+   luôn có sẵn. Bot chạy được trên 1 GB nếu thêm swap (xem 5.4), chỉ là
+   `prep.py` sẽ chậm hơn.
+
+Nhiều người viết script gọi API tạo instance mỗi 30 giây cho tới khi có máy.
+Nó hoạt động, nhưng đổi AD và hạ cấu hình thường giải quyết được rồi.
+
+**Oracle có thể thu hồi VM "nhàn rỗi".** Đây là điều bạn cần biết trước.
+Oracle coi một instance Always Free là idle nếu trong **7 ngày liên tục** cả
+ba điều sau đúng: CPU percentile 95 dưới 20%, network dưới 20%, RAM dưới 20%
+(điều kiện RAM chỉ áp cho shape A1). Bot này dùng ~3% CPU nên **đúng là ứng
+viên bị thu hồi**. Oracle gửi email cảnh báo trước, và cái bị "thu hồi" là
+instance bị **stop** — bạn thường start lại được, nhưng nó có thể xảy ra giữa
+phiên và bạn mất alert cả hôm đó.
+
+Cách xử lý sạch sẽ: **nâng lên Pay As You Go**. Tài nguyên Always Free không
+bị tính phí sau khi nâng, và instance PAYG không bị thu hồi vì nhàn rỗi. Nếu
+giữ Always Free, ít nhất hãy bật giám sát để biết khi nó bị stop — thêm vào
+crontab một dòng gửi tin Telegram lúc máy boot chẳng hạn, hoặc đơn giản là để
+ý heartbeat sáng của bot: sáng nào không thấy heartbeat thì vào Console xem
+instance còn RUNNING không.
+
+(Trên mạng có nhiều script "keep-alive" đốt CPU giả để vượt ngưỡng 20%. Chúng
+chạy được, nhưng đó là đốt điện thật để lách một chính sách — nâng PAYG rẻ hơn
+và trung thực hơn.)
+
+**Đừng chạm vào firewall.** Ảnh Ubuntu trên OCI đến kèm sẵn rule iptables, và
+lớp `Security List` / `NSG` của VCN còn chặn ở tầng trên nữa. Bot chỉ cần
+kết nối đi ra nên **không phải mở gì cả**. Chạy `sudo ufw enable` mà chưa
+allow 22 là mất SSH ngay lập tức, và cách vào lại duy nhất là Cloud Shell
+serial console — đừng thử.
+
+**IP nhà và IP datacenter không được đối xử như nhau.** SEC EDGAR không quan
+tâm, miễn `SEC_UA` hợp lệ. Nhưng **Yahoo screener siết IP cloud mạnh hơn** —
+nếu trên VM bạn thấy `[yahoo] trang 0 loi` liên tục trong khi ở máy nhà thì
+không, đó là chuyện này. Bot vẫn chạy được: `universe_live.py` gộp hai nguồn
+và Alpaca là nguồn realtime, chỉ là bạn mất phần đối chiếu chéo (cột "lệch %
+giữa 2 nguồn" ở mục 3 và điểm `+1.5` cho mã chỉ Alpaca thấy sẽ không còn ý
+nghĩa vì mọi mã đều chỉ Alpaca thấy).
+
+### 5.13 Kiểm tra sức khoẻ hệ thống
+
+Ba lệnh chạy sau tuần đầu để chắc mọi thứ ổn:
+
+```bash
+systemctl is-active scanner && uptime          # service sống, máy chưa reboot lạ
+df -h / && free -h                             # đĩa và RAM còn thoải mái
+ls -la ~/scanner/state/                        # baseline.db mới cỡ nào
+sqlite3 ~/scanner/state/baseline.db \
+  "SELECT k, v FROM meta; SELECT COUNT(*) FROM alerts WHERE day = date('now');"
+```
+
+`meta.built` phải là ngày hôm nay (hoặc phiên gần nhất) — nếu nó cũ vài ngày
+thì cron `prep.py` đang không chạy, xem lại 5.8.
+
+### Chạy trên máy khác
+
+**Windows** — Task Scheduler, trigger "At startup", action
+`C:\...\scanner\.venv\Scripts\python.exe C:\...\scanner\main.py`, đặt
+"Start in" là thư mục scanner. Nhớ đặt cả task cho `prep.py`.
+
+**macOS** — `launchd` với `KeepAlive`, hoặc đơn giản là `tmux` nếu bạn không
+tắt máy. Nhưng laptop có sleep, và sleep giữa phiên thì bot mất phiên — VM
+vẫn là lựa chọn đúng.
+
+**Raspberry Pi** — chạy tốt, dùng y hệt phần systemd ở 5.7. Nhớ
+`sudo timedatectl set-timezone Europe/Berlin` và kiểm tra thẻ SD còn khoẻ
+(SQLite + WAL ghi khá nhiều).
 
 ---
 
@@ -732,6 +1133,382 @@ của mình, thay mảng này bằng số liệu đo được sẽ chính xác h
   chính footer mỗi alert cũng nói vậy.
 
 ---
+
+## 11. Roadmap — các bước tiếp theo
+
+Sắp theo thứ tự **giá trị / công sức**, không phải theo độ thú vị. Mỗi mục có
+tiêu chí "xong" rõ ràng để bạn biết khi nào dừng.
+
+Nguyên tắc xuyên suốt: **bot này là công cụ phát hiện, không phải công cụ giao
+dịch.** Mọi thứ dưới đây đều nhằm làm alert *đáng tin hơn* hoặc *ít rác hơn*,
+không nhằm tự động đặt lệnh.
+
+---
+
+### PHASE 1 — Đo chất lượng alert (làm trước mọi thứ khác)
+
+**Vấn đề:** hiện tại `ALERT_SCORE = 7.0` và trọng số trong `scorer.py` là số
+bạn *đoán*. Không có cách nào biết mã 8.3 điểm có thật sự tốt hơn mã 7.1 điểm.
+Không có dữ liệu này thì mọi lần "tinh chỉnh" chỉ là đổi cảm giác.
+
+**Việc cần làm — `outcome.py` (module mới):**
+
+Bảng mới trong `state/baseline.db`:
+
+```sql
+CREATE TABLE IF NOT EXISTS outcome (
+    sym       TEXT,
+    day       TEXT,
+    alert_ts  INTEGER,        -- lúc gửi alert
+    score     REAL,
+    level     INTEGER,
+    px0       REAL,           -- giá lúc alert
+    px15      REAL,           -- giá sau 15 phút
+    px60      REAL,           -- giá sau 60 phút
+    px_close  REAL,           -- giá đóng phiên
+    hi_after  REAL,           -- đỉnh cao nhất sau alert
+    lo_after  REAL,           -- đáy thấp nhất sau alert
+    PRIMARY KEY (sym, alert_ts)
+);
+```
+
+Một task async trong `main.py`: mỗi 60 giây, tìm các dòng `outcome` còn thiếu
+`px15`/`px60`/`px_close` và đã tới hạn, rồi điền vào từ `st.universe` (giá đã
+có sẵn trong vòng quét, **không cần gọi API thêm**). Sau giờ đóng, một job
+cron điền `px_close`, `hi_after`, `lo_after`.
+
+**Rồi `scripts/report_quality.py`** in ra bảng như sau:
+
+```
+BUCKET      n     win15%  med15%  win60%  med60%  medMFE%  medMAE%
+7.0-8.0    142     48%    +0.4%    44%    -0.2%    +3.1%    -2.8%
+8.0-9.0     67     61%    +1.9%    57%    +2.4%    +6.0%    -2.1%
+9.0-10.0    23     70%    +3.8%    65%    +5.1%    +9.2%    -1.9%
+10.0+        8     75%    +6.2%    75%    +8.0%   +14.1%    -2.2%
+```
+
+**Tiêu chí xong:** sau 3–4 tuần chạy, bảng này cho thấy điểm cao **thật sự**
+tương quan với kết quả tốt hơn. Nếu bucket 7–8 có `win15%` khoảng 50% (tức là
+ngang tung xúc xắc) thì bạn đã tìm ra câu trả lời: **nâng `ALERT_SCORE` lên
+8.0** và cắt được một nửa số alert rác.
+
+**Công sức:** ~150 dòng code. **Đây là mục có ROI cao nhất trong toàn bộ danh
+sách này** — nó biến việc tinh chỉnh từ đoán thành đo.
+
+⚠️ Đừng tự lừa mình ở bước này. `hi_after` (MFE) trông rất đẹp vì nó là đỉnh
+*hoàn hảo* mà không ai bắt được. Cột đáng tin là `med15%` và `med60%`. Và nhớ
+rằng số liệu này **không tính slippage, spread, hay việc bạn có kịp vào lệnh
+hay không** — mã float nhỏ RVOL 60x có spread rất rộng.
+
+---
+
+### PHASE 2 — Feed trading halt (giá trị cao, công sức thấp)
+
+**Vấn đề:** một mã +85% RVOL 60x rất có thể **đang bị halt**. Alert cho một mã
+đang halt là alert vô dụng — bạn không mua được, và khi mở lại giá đã nhảy chỗ
+khác. Ngược lại, mã vừa **resume sau halt T2** (tin đã ra) lại là tình huống
+đáng chú ý nhất.
+
+**Nguồn (đã kiểm chứng, miễn phí, không cần key):**
+
+```
+https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts
+```
+
+XML trả về mỗi `<item>` có `ndaq:IssueSymbol`, `ndaq:ReasonCode`,
+`ndaq:HaltDate` + `ndaq:HaltTime`, và `ndaq:ResumptionTradeTime` (trống nghĩa
+là **chưa mở lại**). Nasdaq ghi rõ: **không query quá 1 lần/phút.**
+
+Các mã lý do cần biết:
+
+| Code | Nghĩa | Xử lý trong alert |
+|---|---|---|
+| `LUDP` | Volatility pause (giá chạy ≥10% trong 5 phút) | 🔴 rất thường gặp với mã bạn quét |
+| `T1` | Halt chờ tin — tin **chưa** ra | ⏸️ chờ, đừng vào |
+| `T2` | Tin đã ra, vẫn đang halt | 🟡 chuẩn bị, resume sắp tới |
+| `T12` | Halt chờ công ty trả lời SEC/exchange | ⚠️ xấu |
+| `H10` | **SEC trading suspension** | ⛔ cực xấu, thường là nghi vấn gian lận |
+
+**`halts.py` (module mới):** một task async poll mỗi 60 giây, parse XML, giữ
+dict `{sym: {"code": ..., "since": ..., "resume": ...}}` trong bộ nhớ.
+
+**Tích hợp:**
+- `render.AlertView` thêm field `halt` → khi có halt, chèn một dòng **ngay
+  đầu tin nhắn**, trên cả panel: `⏸️ HALT T1 · tu 15:42 ET · chua co gio mo lai`
+- `H10` → **chặn alert hoàn toàn**, hoặc gắn cảnh báo đỏ đậm ở khối RISK
+- Mã vừa resume trong 5 phút → cộng điểm hoặc gắn nhãn `🔄 vua resume`
+
+**Tiêu chí xong:** trong một phiên có mã bị LUDP, alert phải hiện dòng halt.
+
+**Công sức:** ~100 dòng. Không cần API key, không rate limit đáng lo. **Làm
+ngay sau Phase 1.**
+
+---
+
+### PHASE 3 — Catalyst: mã này chạy *vì cái gì*
+
+**Vấn đề:** alert hiện tại nói "RVOL 66x, +85%" nhưng không nói **tại sao**.
+Bạn phải tự mở Finviz đi tìm. Mà "tại sao" chính là thứ quyết định nên bỏ qua
+hay để ý — cùng một +85%, do FDA approval khác hoàn toàn do pump vô cớ.
+
+**Nguồn (đã kiểm chứng, có gói free):**
+
+```
+wss://stream.data.alpaca.markets/v1beta1/news
+```
+
+Đăng ký `{"action":"subscribe","news":["*"]}` rồi nhận từng bài. Trường
+`symbols` là array mã liên quan, `headline`, `source` (thường là Benzinga),
+`created_at`, `url`. Bạn **đã có `ALPACA_KEY`/`ALPACA_SECRET`** nên không cần
+đăng ký gì thêm.
+
+**`news.py` (module mới):** giữ websocket, lưu vào dict cuộn
+`{sym: [(ts, headline, url), ...]}` chỉ giữ 4 giờ gần nhất và bỏ mã không có
+trong universe (để không phình RAM).
+
+**Tích hợp vào `render.py`** — một khối mới đặt **trên** khối WHY, vì tin tức
+quan trọng hơn giải thích điểm:
+
+```
+📰 CATALYST
+   "XYZ Announces FDA Clearance for..."
+   Benzinga · 14 phut truoc · [doc]
+```
+
+**Phân loại từ khoá** để gắn icon và điều chỉnh điểm (đây là nơi giá trị thật
+nằm, không phải ở việc hiển thị):
+
+| Nhóm từ khoá | Icon | Ý nghĩa |
+|---|---|---|
+| `fda approval`, `clearance`, `phase 3`, `topline` | 🧬 | catalyst thật, bền |
+| `contract`, `award`, `partnership`, `acquisition` | 🤝 | catalyst thật |
+| `offering`, `pricing of`, `registered direct`, `atm` | 💧 | **pha loãng — trừ điểm mạnh** |
+| `reverse split` | ⚠️ | tăng giá giả |
+| `nasdaq notification`, `deficiency`, `delisting` | ⛔ | rủi ro cao |
+| không có tin | ⚪ | chạy không có lý do → cẩn thận |
+
+Nhóm 💧 đặc biệt quan trọng: một mã +80% kèm headline "Announces Pricing of
+$15M Registered Direct Offering" là bẫy điển hình — nó vừa in thêm cổ phiếu.
+`edgar.py` của bạn bắt được cái này *sau* khi 424B5 lên EDGAR, nhưng news
+stream bắt được **sớm hơn nhiều**.
+
+**Tiêu chí xong:** ≥70% alert có ít nhất một dòng catalyst hoặc nhãn ⚪ rõ ràng.
+
+**Công sức:** ~200 dòng, cộng thời gian nuôi từ điển từ khoá dần theo thực tế.
+
+---
+
+### PHASE 4 — Dọn nợ kỹ thuật (làm khi có 2 tiếng rảnh)
+
+Không thêm tính năng, chỉ để những phase sau đỡ đau.
+
+**4a. Gộp `notifier.py` và `tgapi.py`.** Hiện có hai đường gửi Telegram song
+song, `tg_send()` fallback từ cái này sang cái kia. Nó chạy được, nhưng nghĩa
+là logic rate-limit và degradation HTML tồn tại ở hai nơi và sẽ lệch nhau.
+Chọn `tgapi.py` làm đường chính, biến `notifier.py` thành *chỉ* lớp spool
+(hàng đợi lúc mạng chết), bỏ phần format khỏi nó.
+
+**4b. Viết test cho `scorer.py` và `render.py`.** Hai file này là nơi bug
+lặng lẽ nhất — sai trọng số không crash, chỉ ra số vô nghĩa.
+
+```
+tests/
+  test_scorer.py     # input cố định → điểm cố định, chặn regression
+  test_render.py     # panel <pre> phải thuần ASCII, len < SAFE_LEN,
+                     # HTML tag phải cân, không lọt tag lạ
+  test_clock.py      # premarket/regular/afterhours/closed + biên DST
+  test_edgar.py      # assess() với filing giả, kiểm cờ pha loãng
+```
+
+Chạy bằng `pytest -q`. Test 4b đáng giá nhất là **`render` với dữ liệu thiếu**:
+`float_sh=None`, `cik=None`, `explain=""` — đó là chỗ hay `TypeError` giữa
+phiên.
+
+**4c. GitHub Actions.** Một file `.github/workflows/ci.yml` chạy `pytest` +
+`python -m compileall` mỗi lần push. Bạn deploy bằng `git pull` nên bug syntax
+push lên là service crash-loop; CI bắt trước.
+
+**4d. Log có cấu trúc.** Hiện log là chuỗi tiếng Việt cho người đọc. Thêm một
+file thứ hai `state/events.jsonl` ghi mỗi alert dạng JSON một dòng. Phase 1
+cần cái này để phân tích, và `grep` trên log tiếng Việt sẽ không bao giờ đủ.
+
+---
+
+### PHASE 5 — Bớt rác, bớt trùng
+
+Khi bot đã chạy vài tuần bạn sẽ gặp ba kiểu rác. Chờ đến lúc *thật sự* gặp
+mới sửa, đừng làm sớm.
+
+**5a. Alert theo chùm (cluster).** Khi cả nhóm quantum/uranium/nuclear chạy
+cùng lúc, bạn nhận 8 alert gần như giống nhau. Giải pháp: nếu ≥3 mã cùng
+sector vượt ngưỡng trong 10 phút, gửi **một** tin gộp:
+
+```
+🌊 NHOM DANG CHAY · Uranium (4 ma)
+   UUUU  +22%  8.1 diem
+   UEC   +19%  7.6
+   DNN   +17%  7.2
+   NXE   +14%  7.0
+```
+
+Cần cột `sector` trong bảng `base` — `prep.py` lấy được từ Yahoo cùng lúc với
+`prev_close`, gần như miễn phí.
+
+**5b. Cooldown thích ứng.** `COOLDOWN = 540` cố định cho mọi mã. Nên: mã đã
+alert 3 lần trong ngày → nhân đôi cooldown; mã điểm tăng ≥2.0 so với lần
+trước → cho phép gửi sớm (đó là leo thang thật, đáng biết).
+
+**5c. Nút "Bỏ qua mã này hôm nay".** Nút inline `mute|SYM` ghi vào bảng
+`watch` với `kind='mute'`, `main.py` bỏ qua mã đó tới hết phiên. Đây là tính
+năng **rẻ nhất** để giảm rác, vì nó dùng ngay phán đoán của bạn thay vì cố
+làm scorer thông minh hơn.
+
+---
+
+### PHASE 6 — Lệnh chat và bảng tổng kết
+
+Hiện tại bot chỉ nói một chiều. Thêm vài lệnh trong `callbacks.py` (bạn đã có
+vòng `getUpdates` rồi, chỉ cần nhận thêm `message` ngoài `callback_query`):
+
+| Lệnh | Việc |
+|---|---|
+| `/top` | 10 mã điểm cao nhất *ngay lúc này*, kể cả dưới ngưỡng |
+| `/s WETO` | render alert cho một mã bất kỳ theo yêu cầu |
+| `/wl` | danh sách watchlist (`store.watch_list`) kèm điểm hiện tại |
+| `/stats` | bảng chất lượng của Phase 1, gửi thẳng vào chat |
+| `/mute WETO` | bỏ qua mã tới hết phiên |
+| `/health` | uptime, tuổi baseline, số alert hôm nay, lỗi API gần nhất |
+
+`/health` đáng làm sớm: nó là cách nhanh nhất để biết bot còn sống mà không
+cần SSH — trả lời trực tiếp cho lo ngại "Oracle thu hồi instance nhàn rỗi" ở
+mục 5.12.
+
+**Tổng kết cuối phiên** (22:05 giờ Đức, sau khi đóng cửa):
+
+```
+📊 TONG KET 04/09
+   38 alert · 12 ma · diem cao nhat WETO 9.4
+   Top theo dong tien: WETO $311M · CHPT $180M
+   Sau 60p:  8 tang / 4 giam  (trung vi +1.9%)
+   Watchlist:  UUUU +4.2%  ·  SMR -1.1%
+```
+
+Dữ liệu cho phần "sau 60p" đến từ bảng `outcome` của Phase 1 — thêm một lý do
+làm Phase 1 trước.
+
+---
+
+### PHASE 7 — Chất lượng dữ liệu nền
+
+Việc âm thầm nhưng ảnh hưởng tới *mọi* điểm số.
+
+**7a. Float chính xác hơn.** `float_sh` từ Yahoo thường cũ hoặc sai với mã
+micro-cap vừa phát hành thêm — mà `float_rot` là một trong những tín hiệu
+mạnh nhất của bạn. Nguồn tốt hơn: `data.sec.gov` companyfacts
+(`dei:EntityCommonStockSharesOutstanding`) — chính xác, miễn phí, và bạn **đã
+có `SEC_UA`** hợp lệ để gọi. Đây là "shares outstanding" chứ không phải
+"float", nhưng nó *mới* và đủ để phát hiện khi Yahoo lệch nghiêm trọng. Cách
+dùng an toàn nhất: dùng nó để **gắn cờ số liệu đáng ngờ**, không phải để thay
+thế mù quáng.
+
+```
+⚠️ float Yahoo 8.4M nhung SEC bao 31.2M shares (11/08) — float_rot co the sai
+```
+
+**7b. Short interest.** FINRA công bố 2 lần/tháng, miễn phí. Short interest
+cao + float nhỏ + RVOL cao là tổ hợp squeeze kinh điển, và bạn đang bỏ qua
+chiều này hoàn toàn.
+
+**7c. Cảnh báo baseline cũ.** Nếu `meta.built` không phải hôm nay, **ghi rõ
+trong mỗi alert**, đừng chỉ ghi log:
+
+```
+⚠️ baseline tu 02/09 (2 ngay truoc) — prev_close va adv20 co the lech
+```
+
+Vì `atr_move` và `chg%` đều dựa trên baseline, một `prep.py` chết âm thầm sẽ
+làm toàn bộ điểm số sai mà tin nhắn trông vẫn hoàn toàn bình thường. **Đây là
+kiểu lỗi nguy hiểm nhất trong cả hệ thống** và nó rẻ để phòng.
+
+---
+
+### PHASE 8 — Chỉ khi bạn muốn dùng lâu dài
+
+Đừng chạm vào cho đến khi Phase 1–3 đã chạy ổn vài tháng.
+
+**8a. Chấm điểm bằng dữ liệu.** Sau ~500 alert có kết quả trong bảng
+`outcome`, bạn có thể fit một logistic regression đơn giản (chỉ cần
+`scikit-learn`, chạy dư sức trên VM 6 GB) để tìm trọng số *thực nghiệm* thay
+vì tay. Giữ scorer thủ công song song và so sánh — nếu model không thắng rõ
+ràng thì giữ cái thủ công, vì nó giải thích được.
+
+⚠️ Cạm bẫy: 500 mẫu là **rất ít**, và tất cả đều từ một chế độ thị trường.
+Model fit trên đó sẽ overfit và sẽ thất bại khi thị trường đổi tính cách. Nếu
+làm, hãy chia train/test theo **thời gian** (không random), và coi kết quả là
+gợi ý chứ không phải chân lý.
+
+**8b. Backtest ngoại tuyến.** Lưu snapshot universe mỗi 5 phút vào parquet
+(~50 MB/tháng) để có thể chạy lại scorer với trọng số mới trên dữ liệu cũ mà
+không phải chờ tuần này qua tuần khác. Đây là thứ biến vòng lặp tinh chỉnh từ
+"vài tuần" thành "vài phút".
+
+**8c. EDGAR real-time.** Hiện `edgar.py` chỉ tra khi có alert. Có thể poll
+`https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&output=atom`
+để bắt filing mới trong vòng 1 phút, hoặc dùng full-text search
+`efts.sec.gov` để tìm từ khoá. Chỉ đáng làm nếu bạn thấy mình thường xuyên
+biết tin muộn.
+
+**8d. Nhiều người dùng.** Bảng `subscriber(chat_id, min_score, sectors, muted)`,
+gửi theo ngưỡng riêng từng người. Chỉ làm nếu có người thật muốn dùng — nó
+kéo theo rate limit Telegram (30 tin/giây toàn bot), quyền riêng tư, và trách
+nhiệm mà một dự án cá nhân không cần.
+
+---
+
+### Những thứ mình khuyên KHÔNG làm
+
+Có giá trị ngang phần trên:
+
+**Tự động đặt lệnh.** Alpaca có API trading và cám dỗ là rõ ràng. Đừng. Bot
+này chưa từng được đo lường (Phase 1 mới bắt đầu), chạy trên VM miễn phí có
+thể bị thu hồi bất cứ lúc nào, và giao dịch mã float nhỏ RVOL 60x là nơi
+slippage ăn sạch mọi lợi thế lý thuyết. Khoảng cách giữa "phát hiện tốt" và
+"giao dịch có lãi" lớn hơn nhiều so với cảm giác.
+
+**Thêm nguồn dữ liệu chỉ vì nó tồn tại.** Bạn đã có `FINNHUB_KEY` và
+`GROQ_KEY` trong `.env` mà không dùng. Mỗi nguồn thêm vào là một điểm chết
+mới, một rate limit mới, một chỗ để giá lệch nhau. Chỉ thêm khi có câu hỏi cụ
+thể mà nguồn hiện tại không trả lời được.
+
+**Cho LLM viết bình luận về mã.** Nghe hấp dẫn, nhưng nó sẽ tạo ra những câu
+tự tin và vô căn cứ đặt ngay cạnh những con số có căn cứ, và bạn sẽ dần tin
+chúng ngang nhau. Nếu vẫn muốn, hãy giới hạn nghiêm ngặt ở việc *tóm tắt tin
+tức đã có* (Phase 3), không phải dự đoán hay khuyến nghị.
+
+**Web dashboard.** Telegram đã là UI. Dashboard thêm một service phải bảo trì,
+một port phải mở (phá vỡ ưu điểm "không cần mở port nào" ở mục 5.0), và bạn
+sẽ không mở nó sau tuần đầu.
+
+**Giao diện đẹp hơn nữa.** Bạn vừa làm xong phần này. Nó đủ rồi. Lợi ích biên
+của việc chỉnh panel giờ gần bằng không so với việc biết alert nào đúng.
+
+---
+
+### Thứ tự đề xuất
+
+```
+Tuần 1-2   Phase 1 (outcome tracking)   ← chạy nền, thu số liệu
+           Phase 2 (halt feed)          ← xong trong một buổi tối
+Tuần 3     Phase 4 (test + CI)          ← trong lúc chờ số liệu Phase 1
+Tuần 4     Đọc bảng Phase 1 → chỉnh ALERT_SCORE và trọng số
+Tuần 5-6   Phase 3 (catalyst/news)
+Sau đó     Phase 5, 6, 7 tuỳ chỗ nào làm bạn khó chịu nhất
+Để dành    Phase 8
+```
+
+Điểm quan trọng nhất của thứ tự này: **Phase 1 và 2 xong trong khoảng một
+tuần công sức, nhưng Phase 1 cần vài tuần *thời gian* để tích dữ liệu.** Nên
+viết nó trước, rồi làm việc khác trong lúc nó thu số liệu. Đừng đợi.
 
 ## Giấy phép
 
