@@ -440,3 +440,6 @@ state/*.jsonl
 state/*.jsonl.1
 state/edgar_cache/
 state/**/*.json
+
+# Log loi copy tu CI ve day de doc, khong phai code
+error.txt

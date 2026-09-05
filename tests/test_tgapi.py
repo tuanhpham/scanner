@@ -1,6 +1,6 @@
 """tgapi.py — duong gui Telegram duy nhat (Phase 4a).
 
-Khong test phan mang (do la viec cua scripts/test_tg.py tren may that). Test
+Khong test phan mang (do la viec cua scripts/check_tg.py tren may that). Test
 phan quyet dinh: khi Telegram tra ve cai gi thi send()/edit() lam gi. Day la
 cho de sai nhat vi `_call` tra ve BON loai gia tri khac nhau, va
 `isinstance(True, int)` la True nen thu tu kiem tra rat de nham.

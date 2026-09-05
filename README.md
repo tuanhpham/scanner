@@ -257,7 +257,7 @@ User-Agent không hợp lệ. Đây không phải secret, chỉ là quy định 
 python clock.py                      # in trạng thái phiên hiện tại
 python scripts/check_calendar.py     # lịch phiên 60 ngày tới theo giờ Đức
 python render.py                     # in 3 alert mẫu, không cần mạng
-python scripts/test_tg.py            # .env đúng chưa: gửi 1 tin vào nhóm
+python scripts/check_tg.py           # .env đúng chưa: gửi 1 tin vào nhóm
 pytest -q                            # toàn bộ test
 ```
 
@@ -1014,7 +1014,7 @@ riêng của project này, ChatGPT không có cách nào hiểu `12.4/12` nghĩa
 | `.github/workflows/ci.yml` | CI: compile + selftest (không thư viện) và `pytest` (đủ thư viện) |
 | `scripts/mark_etf.py` | Gắn cờ `is_etf` từ Nasdaq Trader. **Bắt buộc sau `prep.py`** |
 | `scripts/check_calendar.py` | In lịch phiên 60 ngày tới theo giờ Đức |
-| `scripts/test_tg.py` | Thử `.env` + kết nối Telegram bằng 1 tin nhắn trơn |
+| `scripts/check_tg.py` | Thử `.env` + kết nối Telegram bằng 1 tin nhắn trơn |
 | `scripts/preview_alert.py` | Gửi 1 alert mẫu (dữ liệu giả) để xem layout, có cả nút |
 | `scripts/report_quality.py` | Bảng "điểm cao có tốt hơn không" từ bảng `outcome` |
 
@@ -1084,7 +1084,7 @@ python news.py --live            # gọi thật Alpaca, in tin 4 giờ gần nh�
 python events.py                 # smoke test log có cấu trúc
 python events.py --tail 20       # 20 dòng cuối của state/events.jsonl
 python notifier.py               # smoke test spool: giữ tin, đúng thứ tự
-python scripts/test_tg.py        # .env đúng chưa, bot gửi được vào nhóm chưa
+python scripts/check_tg.py       # .env đúng chưa, bot gửi được vào nhóm chưa
 python scripts/preview_alert.py  # gửi 1 alert mẫu lên Telegram
 ```
 
@@ -1094,6 +1094,9 @@ python scripts/preview_alert.py  # gửi 1 alert mẫu lên Telegram
 pytest -q                        # cần đủ thư viện (chỉ chạy đủ trên VM / CI)
 python tests/test_render.py      # từng file chạy riêng được, không cần pytest
 ```
+
+`pytest.ini` ghim `testpaths = tests`: `pytest -q` **chỉ** quét `tests/`, không
+quét `scripts/`. Đừng bỏ dòng đó — xem mục "Lỗi thường gặp".
 
 Cùng một file test chạy được ở cả hai chỗ (`tests/_util.py`). Trên máy dev thiếu
 thư viện, `need()` **bỏ qua cả file và thoát 0** thay vì báo lỗi — nhờ vậy bạn
@@ -1339,10 +1342,12 @@ CATALYST.
 | `atr_move` = 0 trên mọi mã | `prep.py` chạy giữa phiên, `prev_close` = giá hiện tại | Chạy lại `prep.py` ngoài phiên |
 | `[yahoo] trang 0 loi` | Yahoo rate-limit (~1 req/60s) | `UNIVERSE_SEC = 60` đã tính đến việc này |
 | `[!] SEC_UA chua dat dung dinh dang` | `SEC_UA` thiếu `@` | Điền `Ten That email@domain.com` |
+| `INTERNALERROR> SystemExit` + `no tests ran` | Có file `test_*.py` **ngoài** `tests/` — pytest import nó lúc collect và code cấp module chạy thật | Đổi tên thành `check_*.py`; `pytest.ini` đã chặn bằng `testpaths = tests` |
 
-**Lưu ý:** `scripts/test_tg.py` hiện không chạy được — nó gọi `Notifier()`
-không tham số và `n.raw()`, cả hai đều không còn tồn tại trong `notifier.py`.
-Dùng `scripts/preview_alert.py` để test Telegram.
+**Lưu ý:** script thử Telegram tên là `scripts/check_tg.py`, **không** phải
+`test_tg.py`. Tên cũ trùng mẫu tên của pytest nên nó bị import lúc collect,
+`asyncio.run()` ở cấp module chạy ngay, `SystemExit("Thieu TG_TOKEN")` làm cả
+job `pytest` chết với `INTERNALERROR` trước khi một test nào kịp chạy.
 
 ---
 
@@ -1595,7 +1600,7 @@ Không thêm tính năng, chỉ để những phase sau đỡ đau.
 - **4a. Gộp `notifier.py` vào `tgapi.py`.** `tgapi.py` giờ là đường gửi duy
   nhất; `notifier.py` chỉ còn `class Spool`. Cách hoạt động: **mục 7 → "Đường
   gửi Telegram"**.
-- **4b. Test.** `tests/` — 11 file, 245 test, chạy được cả bằng `pytest -q` và
+- **4b. Test.** `tests/` — 12 file, 248 test, chạy được cả bằng `pytest -q` và
   bằng `python tests/test_x.py` trên máy thiếu thư viện. Cách chạy: **mục 8 →
   "Test"**.
 - **4c. CI.** `.github/workflows/ci.yml` — hai job: `compile` (không cài gì) và
