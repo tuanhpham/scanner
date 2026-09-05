@@ -133,7 +133,8 @@ def score_one(u: dict, b: dict, frac: float) -> dict:
         "cik": b.get("cik"), "diverge": round(diverge, 3),
         "freshness": "REALTIME" if u.get("fresh", 0) >= 3 else "~15min",
         # " · " la dau phan cach render.render_why() dua vao de tach tung dong
-        "sources": sorted(u.get("sources", [])), "explain": " · ".join(parts),
+        # `or []`: sources=None (khong phai thieu khoa) tung lam sorted() nem loi
+        "sources": sorted(u.get("sources") or []), "explain": " · ".join(parts),
     }
 
 

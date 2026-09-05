@@ -75,7 +75,13 @@ TV_URL = os.getenv("TV_URL", "").strip() \
 W_IND, W_LAB, W_VAL, W_DLT = 2, 11, 8, 6
 
 # Uu tien giu lai khi tin nhan vuot SAFE_LEN — khoi diem thap bi bo truoc.
-P_HEAD, P_FOOT, P_DATA, P_BADGE, P_RISK, P_SEC, P_WHY = 9, 8, 7, 6, 5, 3, 2
+# P_HALT cao hon ca header: dang bi tam dung thi moi so lieu con lai la thu yeu.
+# P_NEWS tren P_SEC: khoi CATALYST chi 3-4 dong ma noi duoc "vi sao chay", bo
+# no de giu danh sach ho so SEC la nguoc thu tu gia tri.
+P_HALT, P_HEAD, P_FOOT, P_DATA, P_BADGE, P_RISK, P_NEWS, P_SEC, P_WHY = \
+    10, 9, 8, 7, 6, 5, 4, 3, 2
+
+NEWS_HEAD_MAX = 170     # tieu de dai hon the nay bi cat — Benzinga co ban 200+
 
 TXT = {
     # xep loai muc do — den mau la emoji DUY NHAT o header
@@ -95,16 +101,27 @@ TXT = {
     # tieu de section — in hoa dam, khong emoji
     "h_data": "<b>SỐ LIỆU</b>", "h_risk": "<b>RỦI RO</b>",
     "h_sec": "<b>HỒ SƠ SEC</b>", "h_why": "<b>VÌ SAO CÓ TÍN HIỆU</b>",
+    "h_news": "<b>CATALYST</b>",
+    # khoi CATALYST — nhan nhom lay tu news.py, day chi la phan khung
+    "n_none": "Không thấy tin nào trong 4 giờ qua — chạy không rõ lý do",
+    "n_now": "vừa xong", "n_min": "{m} phút trước",
+    "n_hour": "{h} giờ {m} phút trước",
+    "n_more": "còn {n} tin khác",
     # muc rui ro: tieu de + giai thich
     "r_dil_hi": "PHA LOÃNG — CAO", "r_dil_mid": "ĐÃ ĐĂNG KÝ KÊ PHÁT HÀNH",
     "r_vol": "BIẾN ĐỘNG CỰC MẠNH", "r_float": "ÁP LỰC FLOAT",
-    "r_micro": "GIÁ THẤP / PENNY", "r_halt": "NGUY CƠ HALT (LULD)",
+    "r_micro": "GIÁ THẤP / PENNY",
+    # dong halt (tren cung, ngoai panel) — du kien tu feed Nasdaq, khong doan
+    "hl_on": "TẠM DỪNG GIAO DỊCH", "hl_off": "VỪA MỞ LẠI GIAO DỊCH",
+    "hl_open": "chưa có giờ mở lại",
+    "hl_quote": "mở báo giá {t} ET",
+    "hl_since": "từ {t} ET",
+    "hl_back": "dừng {a} ET → mở lại {b} ET",
     "r_dil_hi_n": "Đang chào bán — cổ phiếu mới có thể ra thị trường bất kỳ lúc nào.",
     "r_dil_mid_n": "Có kế hoạch phát hành — không cần báo trước.",
     "r_vol_n": "Biên độ {a:.1f} lần ATR ngày thường.",
     "r_float_n": "Sổ lệnh mỏng, giá giật mạnh theo cả hai chiều.",
     "r_micro_n": "Spread rộng, trượt giá lớn khi vào và ra.",
-    "r_halt_n": "Biến động {c:+.0f}% trong phiên — dễ bị tạm dừng giao dịch.",
     # ket luan SEC
     "sec_clean": "Không thấy dấu hiệu pha loãng",
     "sec_none": "Không tra được hồ sơ (thiếu CIK)",
@@ -212,6 +229,10 @@ class AlertView:
     detail: bool = False
     tracked: bool = False
     news_url: str | None = None
+    halt: dict | None = None        # halts.HaltBook.view() — None = khong halt
+    # news.NewsBook.view(). None = khong biet gi (thieu key / feed chet) ->
+    # khong ve khoi nao. {"n": 0} = feed song va that su khong co tin.
+    news: dict | None = None
 
     @classmethod
     def from_scan(cls, h: dict, *, sec: dict | None = None,
@@ -219,7 +240,9 @@ class AlertView:
                   session: str = "LIVE", updated: str = "",
                   mso: int | None = None, session_min: int = 390,
                   detail: bool = False, tracked: bool = False,
-                  news_url: str | None = None) -> "AlertView":
+                  news_url: str | None = None,
+                  halt: dict | None = None,
+                  news: dict | None = None) -> "AlertView":
         return cls(
             sym=h["sym"], px=float(h.get("px") or 0),
             chg=float(h.get("chg") or 0) * 100,
@@ -231,7 +254,7 @@ class AlertView:
             mso=mso, session_min=session_min or 390,
             explain=h.get("explain") or "", cik=h.get("cik"),
             sec=sec, prev=prev, detail=detail, tracked=tracked,
-            news_url=news_url)
+            news_url=news_url, halt=halt, news=news)
 
     def snapshot(self) -> dict:
         return {"score": self.score, "rvol": self.rvol,
@@ -245,6 +268,10 @@ class AlertView:
     @property
     def has_sec(self) -> bool:
         return bool(self.sec) and (self.sec.get("n") or 0) > 0
+
+    @property
+    def news_risk(self) -> float:
+        return float((self.news or {}).get("risk") or 0.0)
 
     @property
     def level(self) -> int:
@@ -333,6 +360,59 @@ def _badges(v: AlertView) -> list[str]:
     return [f"⚠️ <b>{esc(' · '.join(tags))}</b>"] if tags else []
 
 
+# ───────────────────────── CATALYST ─────────────────────────
+def _ago(m: int) -> str:
+    """Tuoi tin bang chu. Tin la chuyen cua phut nen khong dung gio ET."""
+    m = max(0, int(m or 0))
+    if m < 1:
+        return TXT["n_now"]
+    if m < 60:
+        return TXT["n_min"].format(m=m)
+    return TXT["n_hour"].format(h=m // 60, m=m % 60)
+
+
+def _link(url: str, label: str) -> str:
+    """Telegram chi nhan http(s):// trong the <a>. Scheme khac -> chu tran.
+
+    Mot URL sai lam CA tin nhan bi tra 400; khong duoc de tin tuc lam mat alert.
+    """
+    u = (url or "").strip()
+    return (f'<a href="{esc(u)}">{esc(label)}</a>'
+            if u.startswith(("http://", "https://")) else esc(label))
+
+
+def render_news(v: AlertView) -> list[str]:
+    """Khoi CATALYST — dat TREN so lieu: "vi sao chay" doc truoc "chay bao nhieu".
+
+    Khong emoji: nhan nhom la chu IN HOA dam, giong khoi HALT (quy uoc toi da
+    2 emoji/tin nhan — den mau o header va dau ⚠️ o dong the).
+    """
+    n = v.news
+    if n is None:
+        return []                    # khong biet gi -> im lang, khong doan
+    if not n.get("n"):
+        # Feed dang song ma khong co tin nao: day la KET LUAN, khong phai
+        # thieu du lieu. README goi day la nhan "chay khong co ly do".
+        return [TXT["h_news"], f"<i>{TXT['n_none']}</i>"]
+
+    head = (n.get("headline") or "").strip()
+    if len(head) > NEWS_HEAD_MAX:
+        head = head[:NEWS_HEAD_MAX].rsplit(" ", 1)[0] + "…"
+
+    body: list[str] = []
+    if n.get("label"):
+        body.append(f"<b>{esc(n['label'])}</b>")
+    body.append(_link(n.get("url") or "", head))
+    meta = [x for x in (esc(n.get("source") or ""), _ago(n.get("age") or 0)) if x]
+    if (n.get("n") or 0) > 1:
+        meta.append(TXT["n_more"].format(n=n["n"] - 1))
+    body.append(f"<i>{' · '.join(meta)}</i>")
+    # Giai thich chi hien cho nhom xau: nhom tot khong can day ai ra quyet dinh.
+    if n.get("note") and v.news_risk > 0:
+        body.append(f"<i>{esc(n['note'])}</i>")
+    return [TXT["h_news"], _quote("\n".join(body))]
+
+
 # ───────────────────────── RISK ─────────────────────────
 def render_risk(v: AlertView, max_items: int = 3) -> list[str]:
     """Muc da sap theo do nghiem trong nen khong can den mau danh dau."""
@@ -347,8 +427,9 @@ def render_risk(v: AlertView, max_items: int = 3) -> list[str]:
         items.append((2, TXT["r_float"], TXT["r_float_n"]))
     if v.px and v.px < MICRO_PRICE:
         items.append((1, TXT["r_micro"], TXT["r_micro_n"]))
-    if abs(v.chg) >= 40 and (v.rvol or 0) >= 10 and v.session in ("LIVE", "PRE"):
-        items.append((1, TXT["r_halt"], TXT["r_halt_n"].format(c=v.chg)))
+    # Truoc day co muc "NGUY CO HALT (LULD)" doan tu chg/rvol. Da bo: halts.py
+    # doc feed that cua Nasdaq va in o dong dau tin nhan, con phan "bien dong
+    # manh" thi muc r_vol o tren da noi. Giu ca hai chi la noi hai lan.
     if not items:
         return []
     items.sort(key=lambda x: -x[0])
@@ -499,6 +580,38 @@ def _kind_label(v: AlertView) -> str:
             "TRK": TXT["trk"]}.get(v.kind, TXT["upd"])
 
 
+# ───────────────────────── HALT ─────────────────────────
+def render_halt(v: AlertView) -> list[str]:
+    """Dong tam dung giao dich — dat TREN header, la thu doc dau tien.
+
+    Khong dung emoji: ca tin nhan chi co dung mot emoji (den mau o header).
+    Chu IN HOA dam da du nang, va giong quy uoc tieu de section.
+    """
+    h = v.halt
+    if not h:
+        return []
+    lab = h.get("label") or h.get("code") or "?"
+    code = h.get("code") or ""
+    head = TXT["hl_off"] if h.get("resumed") else TXT["hl_on"]
+    tail = f" · <code>{esc(code)}</code>" if code else ""
+
+    if h.get("resumed"):
+        when = TXT["hl_back"].format(a=h.get("since") or "?",
+                                     b=h.get("until") or "?")
+    else:
+        when = TXT["hl_since"].format(t=h.get("since") or "?")
+        # ResumptionQuoteTime co truoc ResumptionTradeTime ~5 phut: da biet gio
+        # mo bao gia thi da biet sap mo lai, khac han "chua co gio mo lai".
+        q = h.get("quote")
+        when += f" · {TXT['hl_quote'].format(t=q)}" if q else \
+            f" · {TXT['hl_open']}"
+
+    out = [f"<b>{esc(head)} · {esc(lab)}</b>{tail}"]
+    note = h.get("note") or ""
+    out.append(f"<i>{esc(when)}{(' — ' + esc(note)) if note else ''}</i>")
+    return out
+
+
 def render_header(v: AlertView) -> list[str]:
     lvl = v.level
     return [
@@ -513,9 +626,17 @@ def render_header(v: AlertView) -> list[str]:
 # ───────────────────────── lap message ─────────────────────────
 def _blocks(v: AlertView) -> list[tuple[int, list[str]]]:
     """(uu_tien, cac_dong) cho tung khoi. Uu tien thap bi bo neu qua dai."""
-    out: list[tuple[int, list[str]]] = [(P_HEAD, render_header(v))]
+    out: list[tuple[int, list[str]]] = []
+    if (hl := render_halt(v)):
+        out.append((P_HALT, hl))
+    out.append((P_HEAD, render_header(v)))
     if (b := _badges(v)):
         out.append((P_BADGE, b))
+    # CATALYST truoc SO LIEU: doc "vi sao" roi moi doc "bao nhieu". README chi
+    # yeu cau dat tren WHY; dat tren ca DATA vi mot dong "Pricing of Offering"
+    # doi hoan toan cach hieu day so ben duoi.
+    if (nw := render_news(v)):
+        out.append((P_NEWS, nw))
     if (m := render_metrics(v)):
         out.append((P_DATA, m))
     if (r := render_risk(v)):
@@ -673,6 +794,53 @@ if __name__ == "__main__":
             bad |= {c for c in blk if ord(c) > 127}
     print("ky tu ngoai ASCII trong panel <pre>:",
           " ".join(sorted(bad)) if bad else "khong co -> OK")
+
+    # Dong halt: lay tu chinh halts.py de kiem tra luon hop dong giua hai file
+    # (doi ten khoa trong halts.view() ma quen sua o day thi thay ngay).
+    import time as _t
+
+    import halts
+    _b = halts.HaltBook()
+    _now = _t.time()
+    _b.load(halts._sample(_now), now=_now)
+    print("\n" + "=" * 64)
+    for _s in ("WETO", "NEWSY"):
+        _v = AlertView.from_scan(_DEMO, sec=_DEMO_SEC,
+                                 halt=_b.view(_s, _now))
+        _txt = render_alert(_v)
+        print(f"halt {_s}: " + " / ".join(degrade(_txt, 3).split("\n")[:2]))
+        assert TXT["hl_on"] in _txt or TXT["hl_off"] in _txt, _s
+    # Khong halt -> khong duoc co dong nao.
+    _v = AlertView.from_scan(_DEMO, sec=_DEMO_SEC, halt=None)
+    assert TXT["hl_on"] not in render_alert(_v)
+    print("khong halt -> khong co dong halt: OK")
+
+    # Khoi CATALYST: lay tu chinh news.py de kiem tra hop dong giua hai file.
+    import news
+    _nb = news.NewsBook()
+    _nb.load(news._sample(_now), now=_now)
+    print("\n" + "=" * 64)
+    for _s in ("WETO", "BIOX", "PLAIN", "AAPL"):
+        _v = AlertView.from_scan(_DEMO, sec=_DEMO_SEC,
+                                 news=_nb.view(_s, _now))
+        _txt = render_alert(_v)
+        assert TXT["h_news"] in _txt, _s
+        _got = [x for x in degrade(_txt, 3).split("\n") if x.strip()]
+        _i = _got.index("CATALYST")
+        print(f"catalyst {_s:<6}: " + " / ".join(_got[_i + 1:_i + 4]))
+    # Ma pha loang phai co nhan nhom, va nhan do phai den TU news.py.
+    _v = AlertView.from_scan(_DEMO, sec=_DEMO_SEC, news=_nb.view("WETO", _now))
+    assert _v.news_risk >= news.NEWS_RISK_MAX
+    assert "PHA LOÃNG — TIN VỪA RA" in render_alert(_v)
+    # Khoi CATALYST phai nam TREN khoi SO LIEU va TREN khoi VI SAO.
+    _v.detail = True
+    _t2 = render_alert(_v)
+    assert _t2.index(TXT["h_news"]) < _t2.index(TXT["h_data"]) < \
+        _t2.index(TXT["h_why"]), "thu tu khoi sai"
+    # Khong biet gi (thieu key / feed chet) -> KHONG duoc noi "khong co tin".
+    _v = AlertView.from_scan(_DEMO, sec=_DEMO_SEC, news=None)
+    assert TXT["h_news"] not in render_alert(_v)
+    print("news=None -> khong co khoi CATALYST (khong doan bua): OK")
 
     # Nut Chi tiet: phai bat/tat duoc khoi WHY o CA hai muc.
     for sc, tag in ((12.4, "L3"), (8.3, "L2")):

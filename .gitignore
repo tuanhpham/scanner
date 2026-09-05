@@ -436,5 +436,7 @@ __pycache__/
 state/*.db
 state/*.log
 state/*.json
+state/*.jsonl
+state/*.jsonl.1
 state/edgar_cache/
 state/**/*.json

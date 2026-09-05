@@ -46,7 +46,7 @@ So số liệu live với baseline → chấm điểm → vượt ngưỡng thì
                                 │
                                 ▼  state/baseline.db
    ┌─────────────────────────────────────────────────────────────┐
-   │  CHẠY LIÊN TỤC — main.py: 5 vòng lặp async song song        │
+   │  CHẠY LIÊN TỤC — main.py: 8 vòng lặp async song song        │
    │                                                             │
    │  ① loop_clock   (20s)  clock.py — bây giờ là trạng thái gì? │
    │     PREP → PREMARKET → OPENING → LIVE → CLOSING →           │
@@ -68,7 +68,19 @@ So số liệu live với baseline → chấm điểm → vượt ngưỡng thì
    │     Chấm điểm lại (bỏ qua bộ lọc) → sửa lại chính tin nhắn  │
    │     alert của mã đó. Không gửi tin mới.                     │
    │                                                             │
-   │  ⑤ Callbacks    (long-poll)  callbacks.py                   │
+   │  ⑤ loop_outcome (60s)  outcome.py — đo chất lượng alert     │
+   │     Alert đã gửi: điền giá sau 15p/60p, đỉnh/đáy, giá đóng  │
+   │     → bảng `outcome`. Không gọi API, chỉ đọc lại universe.  │
+   │                                                             │
+   │  ⑥ loop_halts   (60s)  halts.py — feed tạm dừng giao dịch   │
+   │     RSS Nasdaq → mã nào đang halt, vì lý do gì, từ lúc nào. │
+   │     Alert có dòng halt ở trên cùng; H10/T12… bị chặn hẳn.   │
+   │                                                             │
+   │  ⑦ loop_news    (30s)  news.py — tin tức theo mã            │
+   │     Alpaca News → mã này chạy vì cái gì. Tin "Pricing of    │
+   │     Offering" bị trừ điểm; alert có thêm khối CATALYST.     │
+   │                                                             │
+   │  ⑧ Callbacks    (long-poll)  callbacks.py                   │
    │     Nghe nút bấm → chấm điểm lại → sửa tin nhắn tại chỗ     │
    └─────────────────────────────────────────────────────────────┘
 ```
@@ -124,10 +136,12 @@ Premarket dùng hằng số 3%. Ngoài phiên dùng 1.0 (volume nhận được 
 Thang log10 nên RVOL 200× không "ăn" hết điểm — điểm cao đòi **nhiều yếu tố
 cùng lúc**, chứ không phải một chỉ số cực đoan.
 
-### Bước 4 — Trừ điểm rủi ro SEC (`edgar.py`)
+### Bước 4 — Trừ điểm rủi ro pha loãng (`edgar.py` + `news.py`)
 
-Tra hồ sơ SEC 120 ngày gần nhất. Nguy hiểm nhất là công ty **đang bán cổ phiếu
-ra thị trường** khi giá vừa bật — pha loãng, giá sập ngay sau đó:
+Hai nguồn, một hình phạt. Nguy hiểm nhất là công ty **đang bán cổ phiếu ra thị
+trường** khi giá vừa bật — pha loãng, giá sập ngay sau đó.
+
+`edgar.py` tra hồ sơ SEC 120 ngày gần nhất:
 
 | Loại hồ sơ | Rủi ro | Nghĩa là |
 |---|---|---|
@@ -139,7 +153,18 @@ ra thị trường** khi giá vừa bật — pha loãng, giá sập ngay sau đ
 | `SC 13D` | **−1.0** | Cổ đông lớn gom hàng (tín hiệu tốt) |
 
 Hồ sơ mới (≤5 ngày) tính đủ trọng số, cũ hơn chỉ tính 30–50%.
-**Risk ≥ 3.0 → trừ thẳng 2.0 điểm.** Nếu tụt xuống dưới 7.0 thì không gửi.
+
+`news.py` đọc bản tin và gán mỗi tiêu đề một nhóm, nhóm xấu có `risk` (bảng đầy
+đủ ở mục 8 → "Tin tức catalyst"). Bản tin ra **trước** hồ sơ EDGAR vài giờ, nên
+đây thường là nguồn bắt được cái bẫy sớm nhất.
+
+**`max(sec_risk, news_risk) ≥ 3.0 → trừ thẳng 2.0 điểm.**` Nếu tụt xuống dưới
+7.0 thì không gửi. Lấy `max()` chứ không cộng dồn: một bản tin "Pricing of
+Offering" và hồ sơ `424B5` là **cùng một sự kiện** — trừ hai lần là phạt trùng.
+
+Nhóm tin **tốt** (FDA, hợp đồng, kết quả kinh doanh) **không được cộng điểm**:
+chưa có số liệu nào chứng minh tin tốt làm mã chạy xa hơn, và Phase 1 tồn tại
+đúng để tránh chỉnh thang điểm theo cảm giác.
 
 ### Bước 5 — Ngưỡng gửi và chống spam
 
@@ -232,6 +257,8 @@ User-Agent không hợp lệ. Đây không phải secret, chỉ là quy định 
 python clock.py                      # in trạng thái phiên hiện tại
 python scripts/check_calendar.py     # lịch phiên 60 ngày tới theo giờ Đức
 python render.py                     # in 3 alert mẫu, không cần mạng
+python scripts/test_tg.py            # .env đúng chưa: gửi 1 tin vào nhóm
+pytest -q                            # toàn bộ test
 ```
 
 ### Bước 4 — Dựng baseline
@@ -741,12 +768,21 @@ python render.py     # in 3 alert mẫu (mức 1 / 2 / 3) + layout bàn phím
 Một alert mức 3 trông như sau:
 
 ```
+TẠM DỪNG GIAO DỊCH · CHỜ CÔNG BỐ TIN · T1     ← HALT (chỉ khi đang bị dừng)
+từ 15:42 ET · chưa có giờ mở lại — Tin CHƯA ra. Không ai biết giá mở lại ở đâu.
+
 🔴 WETO · $10.61 · ▲ +85.5%             ← HEADER
 EXTREME EVENT · Tín hiệu mới
 ██████████ 12.4/12
 Realtime · 15:42 ET · phút 12/390
 
 ⚠️ ÁP LỰC FLOAT                         ← BADGE
+
+CATALYST                                ← NEWS (blockquote, chỉ khi feed sống)
+PHA LOÃNG — TIN VỪA RA
+Weto Inc Announces Pricing of $15.0 Million Registered Direct Offering
+Benzinga · 30 phút trước · còn 1 tin khác
+Công ty đang bán thêm cổ phiếu. Giá tăng hôm nay không phải vì hoạt động tốt.
 
 SỐ LIỆU                                 ← DATA (khối <pre>, ASCII, cột thẳng)
 FLOW
@@ -788,8 +824,11 @@ Dữ liệu thô, chưa kiểm chứng · Không phải lời khuyên đầu tư
 
 ### Quy ước trình bày
 
-- **7 khối** cố định, luôn đúng thứ tự: HEADER → BADGE → DATA → RISK → SEC →
-  WHY → FOOT. Khối nào không có dữ liệu thì bỏ hẳn, không để trống.
+- **9 khối** cố định, luôn đúng thứ tự: HALT → HEADER → BADGE → CATALYST →
+  DATA → RISK → SEC → WHY → FOOT. Khối nào không có dữ liệu thì bỏ hẳn, không
+  để trống. HALT chỉ xuất hiện khi feed Nasdaq nói mã đang bị dừng (hoặc vừa mở
+  lại trong 5 phút) — bình thường alert bắt đầu ngay ở HEADER. CATALYST chỉ
+  xuất hiện khi feed tin đang sống; xem mục 8 → "Tin tức catalyst".
 - **Panel `<pre>` chỉ dùng ASCII** — bắt buộc, xem mục 9 để biết tại sao.
 - **Cả tin chỉ 2 emoji**: đèn mức độ ở header (🟡/🟠/🔴) và ⚠️ ở dòng thẻ cảnh
   báo. Tiêu đề section và nhãn nút để chữ trơn — Telegram đã tự vẽ nền xám cho
@@ -803,7 +842,11 @@ Dữ liệu thô, chưa kiểm chứng · Không phải lời khuyên đầu tư
   canh phải 8 ký tự, delta cột riêng (`W_IND`, `W_LAB`, `W_VAL`, `W_DLT`).
 - **Không có dòng link chữ ở cuối** — inline keyboard đã có sẵn các nút đó.
 - **Tin quá 3800 ký tự** → bỏ **cả khối** theo thứ tự ưu tiên
-  (WHY → SEC → RISK → BADGE...), không bao giờ cắt giữa tag HTML.
+  (WHY → SEC → CATALYST → RISK → BADGE...), không bao giờ cắt giữa tag HTML.
+  HALT có ưu tiên cao nhất (`P_HALT = 10`, trên cả HEADER): đang bị dừng giao
+  dịch thì mọi số liệu còn lại đều là thứ yếu. CATALYST (`P_NEWS = 4`) đứng
+  trên HỒ SƠ SEC: 4 dòng nói được "vì sao chạy" thì đáng giữ hơn danh sách
+  biểu mẫu.
 
 ### Các nút bấm
 
@@ -951,7 +994,7 @@ riêng của project này, ChatGPT không có cách nào hiểu `12.4/12` nghĩa
 
 | File | Việc |
 |---|---|
-| `main.py` | Vòng lặp chính, 5 task async, ngưỡng alert, ghi bảng `alerts` |
+| `main.py` | Vòng lặp chính, 8 task async, ngưỡng alert, ghi bảng `alerts` |
 | `prep.py` | Dựng baseline hàng ngày: adv20, atr14, prev_close, cik |
 | `clock.py` | Lịch phiên NYSE → giờ Đức. Xử lý DST lệch, nửa phiên, ngày lễ |
 | `universe_live.py` | Gộp Alpaca + Yahoo screener → dict các mã đang chạy |
@@ -959,26 +1002,49 @@ riêng của project này, ChatGPT không có cách nào hiểu `12.4/12` nghĩa
 | `vprofile.py` | Đường cong chữ U của volume nội phiên → RVOL chuẩn hoá |
 | `edgar.py` | Tra SEC EDGAR, chấm điểm rủi ro pha loãng. Cache 30 phút trên đĩa |
 | `render.py` | Dựng HTML cho Telegram. **Thuần hàm** — không network, không DB |
-| `tgapi.py` | Gọi Telegram API trực tiếp: gửi kèm nút, sửa tin, trả lời nút bấm |
-| `notifier.py` | Hàng đợi async + token bucket + spool khi mất mạng (fallback) |
+| `tgapi.py` | **Đường gửi Telegram duy nhất**: nhịp gọi, thử lại, hạ cấp HTML |
+| `notifier.py` | Chỉ là spool trên đĩa (`state/spool.json`) cho lúc mất mạng |
 | `callbacks.py` | Long-polling `getUpdates` → xử lý nút bấm |
 | `store.py` | Bảng phụ: `alert_msg`, `watch`, `kv`. Mọi hàm bắt lỗi, không làm chết alert |
+| `outcome.py` | Đo chất lượng alert: giá sau 15p/60p/đóng phiên, đỉnh/đáy → bảng `outcome` |
+| `events.py` | Log có cấu trúc `state/events.jsonl` — 1 dòng JSON/alert, để máy đọc |
+| `halts.py` | Feed tạm dừng giao dịch của Nasdaq. Chỉ trong RAM, không ghi DB |
+| `news.py` | Tin tức theo mã + bảng từ khoá catalyst. Sổ tay cuộn 4 giờ trong RAM |
+| `tests/` | Test chạy được cả bằng `pytest -q` và bằng `python tests/test_x.py` |
+| `.github/workflows/ci.yml` | CI: compile + selftest (không thư viện) và `pytest` (đủ thư viện) |
 | `scripts/mark_etf.py` | Gắn cờ `is_etf` từ Nasdaq Trader. **Bắt buộc sau `prep.py`** |
 | `scripts/check_calendar.py` | In lịch phiên 60 ngày tới theo giờ Đức |
-| `scripts/preview_alert.py` | Gửi 1 alert mẫu (dữ liệu giả) để xem layout |
+| `scripts/test_tg.py` | Thử `.env` + kết nối Telegram bằng 1 tin nhắn trơn |
+| `scripts/preview_alert.py` | Gửi 1 alert mẫu (dữ liệu giả) để xem layout, có cả nút |
+| `scripts/report_quality.py` | Bảng "điểm cao có tốt hơn không" từ bảng `outcome` |
 
-### Hai đường gửi Telegram
+### Đường gửi Telegram
 
-Có hai module gửi tin, và điều này là cố ý:
+Trước Phase 4a có **hai** module gửi tin, mỗi cái có bản sao riêng của
+rate-limit / 429 / hạ cấp HTML — và hai bản đã bắt đầu lệch nhau. Giờ chỉ còn
+một đường, `notifier.py` không gọi mạng nữa:
 
-- **`tgapi.py`** — đường chính. Gửi được nút bấm, trả về `message_id` để sau
-  này sửa tin. Nếu Telegram trả 400 vì tag HTML, nó **hạ cấp dần**:
-  bỏ `expandable` → bỏ `blockquote` → strip hết tag (`render.degrade()`).
-- **`notifier.py`** — đường dự phòng. Có hàng đợi, giới hạn 15 tin/phút, và
-  **spool ra `state/spool.json`** khi mất mạng — gửi lại khi có mạng, kèm
-  nhãn "trễ N phút". Không gửi được nút bấm.
+- **`tgapi.py`** — mọi lần gọi Bot API. Ba lớp bảo vệ, mỗi lớp cho một kiểu thất
+  bại khác nhau:
+  1. **Nhịp gọi** — `MIN_GAP` 1.2s giữa hai lần gọi, cộng trần `PER_MIN` 18
+     tin/phút. Trần chỉ áp cho `sendMessage`; `editMessageText` và
+     `answerCallbackQuery` đi ngay, không thì người bấm nút phải chờ cả phút.
+  2. **Thử lại** — mất mạng thì lùi dần; 429 thì chờ đúng `retry_after` Telegram
+     trả về. Lỗi 4xx khác thì *không* thử lại: gửi lại cũng thế thôi.
+  3. **Hạ cấp HTML** — Telegram từ chối tag thì bỏ `expandable` → bỏ
+     `blockquote` → strip hết tag (`render.degrade()`). Cắt ở 4096 ký tự.
+- **`notifier.Spool`** — khi `tgapi.send()` trả `None`, text được giữ trong
+  `state/spool.json` (**trên đĩa**, để VM restart giữa lúc mất mạng không mất
+  tin), tối đa 50 tin, bỏ tin *cũ* nhất khi tràn. Gửi bù đúng thứ tự, kèm nhãn
+  "trễ N phút", `loud=False`. Gửi bù được kích hoạt sau mỗi alert gửi thành công
+  và mỗi 20s trong `loop_clock`.
 
-`main.tg_send()` thử `tgapi` trước, thất bại thì rơi về `notifier`.
+**Hạn chế có ý thức: tin gửi bù không có nút bấm.** Nút "Theo dõi" gắn với
+`message_id`, mà tin gửi bù là tin mới nên snapshot cũ không còn khớp. Alert trễ
+không nút vẫn hơn không có alert.
+
+`main.tg_send()` coi "đã vào spool" là **đã gửi**. Nếu trả `False` thì
+`loop_score` sẽ chấm điểm lại mã đó ở vòng sau và gửi trùng.
 
 ### Các bảng trong `state/baseline.db`
 
@@ -989,6 +1055,7 @@ Có hai module gửi tin, và điều này là cố ý:
 | `alerts` | `main.py` | Lịch sử alert đã gửi. Dùng cho `restore_today()` |
 | `alert_msg` | `store.py` | `sym`+`day` → `message_id` + snapshot (để tính delta) |
 | `watch` | `store.py` | Mã đang theo dõi trong phiên (`kind='track'`) |
+| `outcome` | `outcome.py` | 1 dòng/alert: px0, px15, px60, px_close, đỉnh, đáy |
 | `kv` | `store.py` | Hiện chỉ giữ `tg_offset` của `getUpdates` |
 
 DB bật WAL nên nhiều tiến trình đọc/ghi cùng lúc không sao.
@@ -1009,8 +1076,33 @@ python edgar.py AAPL TSLA        # tra hồ sơ SEC của mã cụ thể
 python edgar.py                  # tra 10 mã đã alert gần nhất
 python store.py                  # smoke test bảng phụ, tự dọn sau khi chạy
 python render.py                 # in 3 alert mẫu L1/L2/L3 — không cần mạng
+python outcome.py                # smoke test bảng outcome trên DB tạm
+python halts.py                  # test parser feed halt bằng mẫu — không cần mạng
+python halts.py --live           # gọi thật Nasdaq, in mã nào đang bị dừng
+python news.py                   # test bảng từ khoá catalyst — không cần mạng
+python news.py --live            # gọi thật Alpaca, in tin 4 giờ gần nhất theo mã
+python events.py                 # smoke test log có cấu trúc
+python events.py --tail 20       # 20 dòng cuối của state/events.jsonl
+python notifier.py               # smoke test spool: giữ tin, đúng thứ tự
+python scripts/test_tg.py        # .env đúng chưa, bot gửi được vào nhóm chưa
 python scripts/preview_alert.py  # gửi 1 alert mẫu lên Telegram
 ```
+
+### Test
+
+```bash
+pytest -q                        # cần đủ thư viện (chỉ chạy đủ trên VM / CI)
+python tests/test_render.py      # từng file chạy riêng được, không cần pytest
+```
+
+Cùng một file test chạy được ở cả hai chỗ (`tests/_util.py`). Trên máy dev thiếu
+thư viện, `need()` **bỏ qua cả file và thoát 0** thay vì báo lỗi — nhờ vậy bạn
+vẫn kiểm tra được `render.py`, `halts.py`, `news.py`, `outcome.py`,
+`events.py`, `notifier.py` trước khi push, và CI chạy phần còn lại.
+
+CI có hai job vì hai mục đích khác nhau: `compile` **không cài gì** (bắt lỗi cú
+pháp — bạn deploy bằng `git pull`, một lỗi syntax là service crash-loop suốt
+phiên), còn `test` cài đủ `requirements.txt` rồi `pytest -q`.
 
 `python scorer.py` là công cụ debug tốt nhất. Nó in ra bảng lý do bị loại:
 
@@ -1023,6 +1115,217 @@ Ly do bi loai:
 ```
 
 Nếu `khong co baseline` chiếm gần hết → `prep.py` chưa chạy hoặc chạy lỗi.
+
+### Đo chất lượng alert — bảng `outcome`
+
+Đây là công cụ trả lời câu hỏi **"mã 8.3 điểm có thật sự tốt hơn mã 7.1 điểm
+không"**. Không có nó thì mọi lần chỉnh `ALERT_SCORE` hay trọng số trong
+`scorer.py` chỉ là đổi cảm giác.
+
+Mỗi alert được gửi → một dòng trong bảng `outcome`, rồi được điền dần:
+
+| Cột | Nghĩa |
+|---|---|
+| `px0` | giá **lúc gửi alert** — chính con số bạn nhìn thấy trong tin nhắn |
+| `px15` / `px60` | giá sau 15 / 60 phút |
+| `px_close` | giá đóng phiên |
+| `hi_after` | đỉnh cao nhất sau alert (**MFE**) |
+| `lo_after` | đáy thấp nhất sau alert (**MAE** — mức lỗ phải chịu) |
+| `src` | `live` = số tạm từ vòng quét · `yf` = **đã chốt** bằng nến 1 phút |
+
+**Hai đường điền số, cố ý làm vậy:**
+
+1. `loop_outcome` (60 giây) đọc giá có sẵn trong `st.universe` — **không gọi
+   API nào thêm**. Nhược điểm: mã nguội đi và rời khỏi screener thì mất dữ
+   liệu, và `hi_after`/`lo_after` chỉ là đỉnh/đáy *của các lần lấy mẫu*.
+2. `outcome.backfill()` chạy lúc sang ngày mới, đọc **nến 1 phút của
+   yfinance** → số chính xác, điền cả những mã đã rời universe, rồi đặt
+   `src='yf'`. Chỉ số này mới đáng dùng để kết luận.
+
+Vì vậy báo cáo có cột `cov` (coverage). **Đọc `win%`/`med%` khi `cov` còn thấp
+là tự lừa mình** — phần thiếu chính là những mã đã nguội, tức là phần tệ nhất.
+
+```bash
+python scripts/report_quality.py           # 30 ngày gần nhất
+python scripts/report_quality.py 90        # 90 ngày
+python scripts/report_quality.py 30 --syms # kèm từng alert một
+python outcome.py --backfill 2026-09-04    # chốt lại một ngày cụ thể
+python outcome.py --report 30              # bảng gọn, không phần diễn giải
+```
+
+```
+BUCKET       n   cov  win15   med15  win60   med60  medCls  medMFE  medMAE
+--------------------------------------------------------------------------
+7.0-8.0    142   96%    48%    +0.4    44%    -0.2    -1.1    +3.1    -2.8
+8.0-9.0     67   99%    61%    +1.9    57%    +2.4    +1.0    +6.0    -2.1
+9.0-10.0    23  100%    70%    +3.8    65%    +5.1    +3.3    +9.2    -1.9
+12.0+        8  100%    75%    +6.2    75%    +8.0    +6.1   +14.1    -2.2
+```
+
+**Tiêu chí xong:** sau 3–4 tuần, nếu nhóm `7.0-8.0` có `win15` khoảng 50%
+(ngang tung xúc xắc) trên ≥30 alert thì đã có câu trả lời: **nâng
+`ALERT_SCORE` lên 8.0** và cắt được một nửa số alert rác.
+`report_quality.py` tự in ra kết luận đó khi đủ mẫu, để bạn không đọc bảng
+theo hướng mình muốn thấy.
+
+⚠️ Ba cạm bẫy khi đọc bảng:
+
+- **`medMFE` rất đẹp và gần như vô dụng** — đó là đỉnh *hoàn hảo* không ai bán
+  đúng. Hai cột đáng tin là `med15` và `med60`.
+- Bảng **không tính spread, slippage, hay việc bạn có kịp vào lệnh** — mã float
+  nhỏ RVOL 60× có spread rất rộng.
+- Một mã có thể có **nhiều dòng trong cùng ngày** (alert `NEW` rồi `UP`). Các
+  mẫu đó tương quan với nhau, nên `n` lớn hơn số mã thực tế.
+
+`python main.py --dry` **không** ghi vào bảng `outcome` — chỉ alert gửi thật
+mới được đo.
+
+### Log có cấu trúc — `state/events.jsonl`
+
+`state/bot.log` là tiếng Việt cho **người** đọc lúc bot đang chạy. Còn câu hỏi
+"trong 3 tuần qua, mã có RVOL > 50 *và* SEC risk cao thì thắng bao nhiêu lần"
+thì `grep` trên tiếng Việt không bao giờ trả lời được. `events.py` ghi thêm một
+file cho **máy** đọc: mỗi dòng một JSON độc lập.
+
+```bash
+python events.py --tail 20                 # 20 dòng cuối
+python events.py --tail 50 --kind alert    # chỉ dòng alert
+```
+
+| Khoá | Nghĩa |
+|---|---|
+| `ts` | epoch giây (giữ nguyên dạng số để sort/join, không format) |
+| `kind` | `alert` hoặc `halt_block` |
+| `alert_kind` | `NEW` / `UP` — khác `kind` của dòng log |
+| `level`, `score`, `rvol`, `px`, `chg`, `float_rot`, `sec_risk`, … | số liệu lúc gửi |
+| `dry`, `mso`, `session`, `ts_et`, `halt` | ngữ cảnh phiên |
+
+Ba điều cố ý:
+
+- **Trường thiếu ghi là `null`, không bỏ khoá.** "Không đo được RVOL" và
+  "RVOL = 0" là hai chuyện khác nhau; bỏ khoá thì sau này không phân biệt được.
+- **Ghi thất bại không ném lỗi** — mất một dòng log còn hơn mất một alert. Mọi
+  hàm trả `bool`, lỗi thì im lặng bỏ qua.
+- **Ghi cả trong `--dry`** (có `dry: true`), khác với bảng `outcome`. Dry chỉ
+  đọc, không gửi gì, nên thu số liệu vẫn an toàn.
+
+Ghép với bảng `outcome` bằng khoá **`(sym, int(ts))`**: `main.py` truyền *cùng*
+một `ts` cho `outcome.record()` và `events.alert()`, nhưng cột `alert_ts` là
+`INTEGER` nên phần thập phân bị cắt.
+
+File tự xoay khi vượt 5 MB (đổi tên thành `.jsonl.1`), và không nằm trong git.
+
+### Tạm dừng giao dịch — `halts.py`
+
+Một mã +85% với RVOL 60× rất có thể **đang bị tạm dừng giao dịch**. Alert cho
+mã đang halt là alert vô dụng: không mua được, và khi mở lại giá đã nhảy sang
+chỗ khác. Ngược lại, mã **vừa mở lại** sau halt T2 (tin đã ra) lại là tình
+huống đáng chú ý nhất trong phiên.
+
+Nguồn: `https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts` — miễn phí,
+không cần key, nhưng **Nasdaq giới hạn 1 query/phút**, nên `HALT_SEC = 60` và
+đừng giảm.
+
+`loop_halts` chạy mỗi 60 giây, giữ toàn bộ trạng thái **trong RAM** (không ghi
+DB — dữ liệu này chỉ có giá trị trong vài phút). Ba mức xử lý theo `sev`:
+
+| `sev` | Mã lý do | Bot làm gì |
+|---|---|---|
+| 3 | `H10` (SEC đình chỉ), `H4`, `H9`, `H11`, `T12`, `D`, `MWC3` | **Chặn hẳn alert.** Log `CHAN <sym>` một lần |
+| 2 | `T1` (chờ tin), `T6`, `R1`/`R4`/`R9`, mã lạ | Vẫn gửi alert, có dòng HALT ở trên cùng |
+| 1 | `LUDP`/`LUDS` (biến động), `T2` (tin đã ra), `M` | Vẫn gửi, dòng HALT mang tính thông tin |
+
+Điểm quan trọng nhất khi đọc feed: **`ResumptionTradeTime` trống = chưa mở
+lại.** Đó là trường quyết định `active`.
+
+Ba lựa chọn thiết kế cần biết:
+
+- **Feed cũ hơn 5 phút (`STALE`) → `view()` trả `None`.** Mất mạng thì bot nói
+  "không biết", chứ không in một dòng halt đã hết hiệu lực.
+- **Halt cũ hơn 12 giờ (`MAX_AGE_H`) không còn tính là đang halt** — feed giữ
+  lại bản ghi cũ, và một mã "đang halt từ 3 ngày trước" gần như luôn là bản ghi
+  chưa được cập nhật resume.
+- **Lỗi mạng không xoá dữ liệu cũ.** `refresh()` trả `-1` và giữ nguyên
+  `by_sym`: biết trạng thái của 2 phút trước vẫn tốt hơn không biết gì.
+
+Mục "NGUY CƠ HALT (LULD)" trong khối RỦI RO **đã bị xoá** — nó đoán từ
+`chg`/`rvol`, mà giờ đã có feed thật; phần "biến động mạnh" thì mục
+`BIẾN ĐỘNG CỰC MẠNH` ngay trên nó đã nói rồi.
+
+**Tiêu chí xong:** trong một phiên có mã bị `LUDP`, alert của mã đó phải hiện
+dòng halt. Kiểm nhanh giữa phiên Mỹ:
+
+```bash
+python halts.py --live        # nếu cột [DANG HALT] có mã nào, feed đang hoạt động
+```
+
+Không có mã nào đang halt là **bình thường** ngoài giờ và cả trong những phiên
+yên tĩnh — feed chỉ có bản ghi khi thực sự có halt.
+
+### Tin tức catalyst — `news.py`
+
+Alert cũ nói **"RVOL 66×, +85%"** nhưng không nói **vì sao**. Mà cái "vì sao" mới
+quyết định có nên quan tâm: một mã +85% vì phê duyệt FDA và một mã +85% vì vừa
+công bố chào bán cổ phiếu là hai chuyện trái ngược nhau.
+
+Nguồn: `https://data.alpaca.markets/v1beta1/news` — dùng lại `ALPACA_KEY` /
+`ALPACA_SECRET` đã có, không cần key mới. `loop_news` gọi mỗi 30 giây, giữ một
+**sổ tay cuộn 4 giờ trong RAM** (`{mã: [(ts, tiêu đề, url), …]}`), không ghi DB.
+
+**Bảng từ khoá** — nhóm nào khớp trước thì thắng, nên **thứ tự dòng là một phần
+của logic**:
+
+| Nhãn hiện trong alert | `risk` | Ví dụ từ khoá |
+|---|---|---|
+| PHÁ SẢN / MẤT THANH KHOẢN | 3.0 | `chapter 11`, `chapter 7`, `receivership` |
+| NGUY CƠ HỦY NIÊM YẾT | 3.0 | `deficiency letter`, `delisting`, `minimum bid price` |
+| **PHA LOÃNG — TIN VỪA RA** | **3.0** | `pricing of`, `public offering`, `registered direct`, `private placement`, `at-the-market`, `atm program`, `convertible note`, `warrant inducement`, `s-3` |
+| GỘP CỔ PHIẾU (REVERSE SPLIT) | 2.0 | `reverse stock split`, `1-for-` |
+| DỮ LIỆU / PHÊ DUYỆT | 0 | `fda`, `phase 3`, `topline`, `clearance` |
+| HỢP ĐỒNG / THƯƠNG VỤ | 0 | `contract`, `awarded`, `definitive agreement` |
+| KẾT QUẢ KINH DOANH | 0 | `record revenue`, `third quarter`, `guidance` |
+
+**Nhóm PHA LOÃNG là lý do module này tồn tại.** Cái bẫy kinh điển là +80% kèm
+tiêu đề *"Announces Pricing of $15M Registered Direct Offering"*: `edgar.py` chỉ
+bắt được **sau khi** 424B5 về tới EDGAR, còn bản tin ra **sớm hơn nhiều**.
+
+Bốn lựa chọn thiết kế cần biết:
+
+- **Tin xấu thắng tin mới.** `view()` trả về bản ghi có `risk` cao nhất, không
+  phải bản ghi mới nhất. Một mã ra *"Pricing of Offering"* lúc 9:40 rồi
+  *"Record Revenue"* lúc 10:05 vẫn phải hiện dòng pha loãng.
+- **Nhóm xấu xếp trước nhóm tốt trong `GROUPS`.** Tiêu đề *"Announces FDA
+  Clearance And Pricing Of $20M Offering"* là có thật, và nếu xét nhóm tốt trước
+  thì nó được gắn nhãn tích cực — đúng cái bẫy cần chặn.
+- **Nhóm tốt `risk = 0`: không cộng điểm.** Chưa có số liệu nào chứng minh
+  "có tin FDA" thì alert đúng hơn. Chờ Phase 1 trả lời bằng cột `news_group`
+  trong `state/events.jsonl`.
+- **Bài gắn > 4 mã bị bỏ** (`MAX_SYMS`). Đó là *"10 Stocks Moving In Monday's
+  Pre-Market Session"*, không phải catalyst của riêng mã nào.
+
+Và một giao ước ba trạng thái, giống `halts.py`:
+
+| `view()` trả về | Nghĩa | Alert hiện gì |
+|---|---|---|
+| `None` | **không biết** — chưa có key, hoặc feed chết > 3 phút | không có khối CATALYST |
+| `{"n": 0, …}` | feed sống và **thật sự không có tin** | "Không thấy tin nào trong 4 giờ qua — chạy không rõ lý do" |
+| có bản ghi | tin xấu nhất trong 4 giờ | nhãn + tiêu đề (link) + nguồn · bao lâu trước |
+
+Một điểm dễ sai nếu sau này sửa `main.py`: tin pha loãng và filing 424B5 là
+**cùng một sự kiện**, nên `SEC_PENALTY` bị trừ **đúng một lần** qua
+`max(sec_risk, news_risk)`. Có một test khoá đúng điều này lại.
+
+**Tiêu chí xong:** ≥70% alert có ít nhất một dòng catalyst hoặc nhãn "không rõ
+lý do" rõ ràng. Kiểm nhanh:
+
+```bash
+python news.py                # bảng từ khoá + sổ tay, không cần mạng
+python news.py --live         # gọi thật: in tin 4 giờ gần nhất theo mã
+```
+
+`--live` trả `403` nghĩa là gói Alpaca miễn phí của bạn không có quyền đọc news
+— lúc đó `view()` luôn trả `None` và bot chạy y như trước, chỉ mất khối
+CATALYST.
 
 ### Lỗi thường gặp
 
@@ -1058,7 +1361,49 @@ SCORE_SEC = 25          # tần số quét
 TRACK_SEC = 45          # nút Theo dõi: tự sửa lại tin nhắn mỗi bao lâu
 TRACK_ESCALATE = 1.5    # ngưỡng gửi lại cho mã đang theo dõi (nhạy hơn)
 MAX_TRACK = 10          # trần số mã theo dõi cùng lúc, xem mục 6
+OUTCOME_SEC = 60        # đo kết quả alert: điền px15/px60/đỉnh/đáy
+HALT_SEC = halts.POLL   # 60 — ĐỪNG giảm, Nasdaq chỉ cho 1 query/phút
+NEWS_SEC = news.POLL    # 30 — nhịp lấy tin
+SEC_PENALTY = 2.0       # trừ MỘT LẦN, dù cả SEC và tin cùng báo pha loãng
 ```
+
+**`outcome.py`** — đo chất lượng
+```python
+FILL_TOL = 240          # giây, cửa sổ cho phép khi điền px15/px60
+BUCKETS = ((7,8), (8,9), (9,10), (10,12), (12, ...))   # nhóm điểm trong báo cáo
+```
+
+**`halts.py`** — tạm dừng giao dịch
+```python
+POLL = 60               # giới hạn của Nasdaq
+STALE = 300             # feed cũ hơn thế này → coi như không biết gì
+MAX_AGE_H = 12          # halt cũ hơn thế này không còn tính là đang halt
+JUST_RESUMED = 300      # vừa mở lại trong 5 phút → vẫn hiện dòng halt
+BLOCK_SEV = 3           # sev ≥ ngưỡng này → không gửi alert
+REASONS = {...}         # mã lý do → (nhãn, sev, giải thích). Thêm mã mới ở đây
+```
+
+**`news.py`** — tin tức catalyst
+```python
+POLL = 30               # nhịp gọi API
+WINDOW_H = 4            # sổ tay chỉ giữ tin trong 4 giờ gần nhất
+STALE = 180             # không lấy được tin lâu hơn thế → view() trả None
+MAX_SYMS = 4            # bài gắn nhiều mã hơn = bài tổng hợp thị trường, bỏ
+MAX_PER_SYM = 6         # trần số tin mỗi mã, chặn RAM phình
+NEWS_RISK_MAX = 3.0     # từ mức này main.py mới trừ điểm
+GROUPS = (...)          # bảng từ khoá. Thêm từ mới ở đây
+```
+
+Chỗ đáng chỉnh nhất là `GROUPS`. Ba điều phải giữ khi thêm từ khoá:
+
+1. **Nhóm `risk > 0` phải nằm trước mọi nhóm `risk = 0`** — có test khoá lại.
+2. **Dùng cụm từ, đừng dùng từ đơn.** `offering` một mình khớp cả *"Now
+   Offering Free Shipping"*; `pricing of` / `public offering` thì không.
+3. Từ ngắn (`s-3`, `atm`) được tự thêm ranh giới từ, nên `ATMosphere` không bị
+   gắn nhãn oan. Đừng bỏ cơ chế đó.
+
+Cách tìm từ khoá còn thiếu: `grep news_group state/events.jsonl` xem có bao
+nhiêu dòng `null` trên những mã tăng mạnh.
 
 **`scorer.py`** — trọng số và bộ lọc
 ```python
@@ -1074,13 +1419,14 @@ T_STRONG, T_EXTREME = 8.0, 12.0        # ngưỡng mức 2 và mức 3
 SCORE_MAX, BAR_CELLS = 12.0, 10        # thang của thanh điểm
 W_IND, W_LAB, W_VAL, W_DLT = 2, 11, 8, 6   # 4 cột trong panel <pre>
 SAFE_LEN = 3800           # vượt ngưỡng này thì bỏ bớt khối
+NEWS_HEAD_MAX = 170       # cắt tiêu đề tin dài hơn thế
 EXPANDABLE = True         # <blockquote expandable>, cần Bot API >= 7.3
 ASK_MAX = 700             # độ dài prompt của nút Hỏi ChatGPT
 ```
 
 Chữ hiển thị nằm gọn trong dict `TXT` ở đầu `render.py` — sửa tên nhãn, tên
 mức, câu cảnh báo ở đó, không phải lần trong code. Thứ tự bỏ khối khi tin quá
-dài do các hằng `P_HEAD ... P_WHY` quyết định (số càng cao càng được giữ lại).
+dài do các hằng `P_HALT ... P_WHY` quyết định (số càng cao càng được giữ lại).
 
 ### Hai quy ước trong `render.py` — đừng "sửa" lại
 
@@ -1101,7 +1447,9 @@ Nếu dòng đó liệt kê ký tự nào, đó chính là chữ sẽ bị lệc
 (🟡 mức 1 · 🟠 mức 2 · 🔴 mức 3 — đỏ là mạnh nhất) làm neo để mắt quét nhanh
 trong danh sách chat, và một dấu ⚠️ mở dòng thẻ cảnh báo. Tiêu đề section dùng
 IN HOA + `<b>`, không emoji. Mục trong khối `RỦI RO` không dùng đèn màu — sẽ
-trùng nghĩa với đèn mức độ ở header.
+trùng nghĩa với đèn mức độ ở header. Dòng HALT cũng **không** có emoji, dù nó
+là thứ nghiêm trọng nhất trong tin: chữ IN HOA đậm ở dòng đầu tiên đã đủ nặng,
+và thêm emoji thứ ba thì cái neo ở header mất tác dụng.
 
 Nếu đổi chuỗi trong `TXT`, chạy lại `python render.py` để xem cột trong panel
 còn thẳng hàng không — nhãn dài hơn `W_LAB` sẽ đẩy lệch cột giá trị.
@@ -1129,6 +1477,9 @@ của mình, thay mảng này bằng số liệu đo được sẽ chính xác h
   (`FLOAT_TOP_N`), vì `yfinance.get_info()` chậm.
 - **Ngoài phiên số liệu không đồng bộ**: giá là giá đóng cửa → `atr_move` ≈ 0,
   `chg` lệch. `scorer.py` chặn điều này, cần `--force` để bỏ qua.
+- **Feed halt chỉ có mã Nasdaq/NYSE báo về Nasdaq Trader**, và trễ vài chục
+  giây so với lúc halt thật sự xảy ra. Không có dòng halt **không** đảm bảo mã
+  đang giao dịch bình thường.
 - **Không phải lời khuyên đầu tư.** Đây là dữ liệu thô chưa kiểm chứng —
   chính footer mỗi alert cũng nói vậy.
 
@@ -1145,192 +1496,137 @@ không nhằm tự động đặt lệnh.
 
 ---
 
-### PHASE 1 — Đo chất lượng alert (làm trước mọi thứ khác)
+### PHASE 1 — Đo chất lượng alert ✅ ĐÃ XONG
 
-**Vấn đề:** hiện tại `ALERT_SCORE = 7.0` và trọng số trong `scorer.py` là số
-bạn *đoán*. Không có cách nào biết mã 8.3 điểm có thật sự tốt hơn mã 7.1 điểm.
-Không có dữ liệu này thì mọi lần "tinh chỉnh" chỉ là đổi cảm giác.
+Đã cài: `outcome.py`, bảng `outcome`, task `loop_outcome` trong `main.py`, và
+`scripts/report_quality.py`. **Hướng dẫn đọc bảng ở mục 8** ("Đo chất lượng
+alert").
 
-**Việc cần làm — `outcome.py` (module mới):**
+Ba điểm khác với thiết kế ban đầu, đều theo hướng làm số đáng tin hơn:
 
-Bảng mới trong `state/baseline.db`:
+- Ngoài việc điền từ `st.universe`, có thêm `outcome.backfill()` đọc **nến 1
+  phút của yfinance** để chốt lại `px15`/`px60`/`px_close`/đỉnh/đáy chính xác —
+  kể cả những mã đã rời khỏi screener. Chạy tự động lúc sang ngày mới, không
+  cần thêm dòng cron nào.
+- Báo cáo có thêm cột **`cov`** (bao nhiêu % dòng đã có số) và `medCls`, vì đọc
+  `win%` khi dữ liệu còn thiếu là tự lừa mình — phần thiếu chính là mã đã nguội.
+- Bảng lưu thêm `rvol` và `src`, để sau này so được "RVOL cao có tốt hơn không"
+  mà không phải join sang bảng `alerts`.
 
-```sql
-CREATE TABLE IF NOT EXISTS outcome (
-    sym       TEXT,
-    day       TEXT,
-    alert_ts  INTEGER,        -- lúc gửi alert
-    score     REAL,
-    level     INTEGER,
-    px0       REAL,           -- giá lúc alert
-    px15      REAL,           -- giá sau 15 phút
-    px60      REAL,           -- giá sau 60 phút
-    px_close  REAL,           -- giá đóng phiên
-    hi_after  REAL,           -- đỉnh cao nhất sau alert
-    lo_after  REAL,           -- đáy thấp nhất sau alert
-    PRIMARY KEY (sym, alert_ts)
-);
-```
-
-Một task async trong `main.py`: mỗi 60 giây, tìm các dòng `outcome` còn thiếu
-`px15`/`px60`/`px_close` và đã tới hạn, rồi điền vào từ `st.universe` (giá đã
-có sẵn trong vòng quét, **không cần gọi API thêm**). Sau giờ đóng, một job
-cron điền `px_close`, `hi_after`, `lo_after`.
-
-**Rồi `scripts/report_quality.py`** in ra bảng như sau:
-
-```
-BUCKET      n     win15%  med15%  win60%  med60%  medMFE%  medMAE%
-7.0-8.0    142     48%    +0.4%    44%    -0.2%    +3.1%    -2.8%
-8.0-9.0     67     61%    +1.9%    57%    +2.4%    +6.0%    -2.1%
-9.0-10.0    23     70%    +3.8%    65%    +5.1%    +9.2%    -1.9%
-10.0+        8     75%    +6.2%    75%    +8.0%   +14.1%    -2.2%
-```
-
-**Tiêu chí xong:** sau 3–4 tuần chạy, bảng này cho thấy điểm cao **thật sự**
-tương quan với kết quả tốt hơn. Nếu bucket 7–8 có `win15%` khoảng 50% (tức là
-ngang tung xúc xắc) thì bạn đã tìm ra câu trả lời: **nâng `ALERT_SCORE` lên
-8.0** và cắt được một nửa số alert rác.
-
-**Công sức:** ~150 dòng code. **Đây là mục có ROI cao nhất trong toàn bộ danh
-sách này** — nó biến việc tinh chỉnh từ đoán thành đo.
-
-⚠️ Đừng tự lừa mình ở bước này. `hi_after` (MFE) trông rất đẹp vì nó là đỉnh
-*hoàn hảo* mà không ai bắt được. Cột đáng tin là `med15%` và `med60%`. Và nhớ
-rằng số liệu này **không tính slippage, spread, hay việc bạn có kịp vào lệnh
-hay không** — mã float nhỏ RVOL 60x có spread rất rộng.
+**Việc còn lại của phase này không phải code, mà là chờ:** để bot chạy 3–4
+tuần, rồi đọc `python scripts/report_quality.py`. Nếu nhóm `7.0-8.0` có `win15`
+≈ 50% thì nâng `ALERT_SCORE` lên 8.0.
 
 ---
 
-### PHASE 2 — Feed trading halt (giá trị cao, công sức thấp)
+### PHASE 2 — Feed trading halt ✅ ĐÃ XONG
 
-**Vấn đề:** một mã +85% RVOL 60x rất có thể **đang bị halt**. Alert cho một mã
-đang halt là alert vô dụng — bạn không mua được, và khi mở lại giá đã nhảy chỗ
-khác. Ngược lại, mã vừa **resume sau halt T2** (tin đã ra) lại là tình huống
-đáng chú ý nhất.
+Đã cài: `halts.py`, task `loop_halts` (60 giây), khối HALT trong `render.py`,
+và chặn alert với các mã lý do nghiêm trọng. Chi tiết cách hoạt động và cách
+kiểm tra: **mục 8 → "Tạm dừng giao dịch"**.
 
-**Nguồn (đã kiểm chứng, miễn phí, không cần key):**
+Bốn chỗ khác với bản thiết kế ban đầu ở trên, đều có lý do:
 
-```
-https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts
-```
+- **Dòng halt không dùng emoji.** Bản thiết kế đề nghị `⏸️` và `🔄`, nhưng quy
+  ước "cả tin chỉ 2 emoji" (mục 9) quan trọng hơn: emoji thứ ba làm đèn màu ở
+  header mất tác dụng neo mắt. Dòng halt là chữ IN HOA đậm ở dòng đầu tiên —
+  đã là thứ nặng nhất trong tin.
+- **Chặn theo `sev`, không chặn riêng `H10`.** `T12`, `H4`, `H9`, `H11`, `D`
+  cũng tệ ngang `H10`; gán mỗi mã lý do một mức `sev` 0–3 rồi chặn từ `sev 3`
+  thì thêm mã lý do mới về sau chỉ là thêm một dòng trong bảng `REASONS`.
+- **Không cộng điểm cho mã vừa resume.** Đó là thay đổi thang điểm mà chưa có
+  số liệu nào chứng minh; Phase 1 tồn tại chính để tránh loại chỉnh sửa theo
+  cảm giác đó. Hiện chỉ hiện nhãn "VỪA MỞ LẠI GIAO DỊCH".
+- **Đã xoá mục "NGUY CƠ HALT (LULD)"** đoán từ `chg`/`rvol` trong khối RỦI RO —
+  giờ đã có feed thật, giữ cả hai chỉ là nói hai lần.
 
-XML trả về mỗi `<item>` có `ndaq:IssueSymbol`, `ndaq:ReasonCode`,
-`ndaq:HaltDate` + `ndaq:HaltTime`, và `ndaq:ResumptionTradeTime` (trống nghĩa
-là **chưa mở lại**). Nasdaq ghi rõ: **không query quá 1 lần/phút.**
-
-Các mã lý do cần biết:
-
-| Code | Nghĩa | Xử lý trong alert |
-|---|---|---|
-| `LUDP` | Volatility pause (giá chạy ≥10% trong 5 phút) | 🔴 rất thường gặp với mã bạn quét |
-| `T1` | Halt chờ tin — tin **chưa** ra | ⏸️ chờ, đừng vào |
-| `T2` | Tin đã ra, vẫn đang halt | 🟡 chuẩn bị, resume sắp tới |
-| `T12` | Halt chờ công ty trả lời SEC/exchange | ⚠️ xấu |
-| `H10` | **SEC trading suspension** | ⛔ cực xấu, thường là nghi vấn gian lận |
-
-**`halts.py` (module mới):** một task async poll mỗi 60 giây, parse XML, giữ
-dict `{sym: {"code": ..., "since": ..., "resume": ...}}` trong bộ nhớ.
-
-**Tích hợp:**
-- `render.AlertView` thêm field `halt` → khi có halt, chèn một dòng **ngay
-  đầu tin nhắn**, trên cả panel: `⏸️ HALT T1 · tu 15:42 ET · chua co gio mo lai`
-- `H10` → **chặn alert hoàn toàn**, hoặc gắn cảnh báo đỏ đậm ở khối RISK
-- Mã vừa resume trong 5 phút → cộng điểm hoặc gắn nhãn `🔄 vua resume`
-
-**Tiêu chí xong:** trong một phiên có mã bị LUDP, alert phải hiện dòng halt.
-
-**Công sức:** ~100 dòng. Không cần API key, không rate limit đáng lo. **Làm
-ngay sau Phase 1.**
+**Việc còn lại:** đúng một lần kiểm tra thực tế — trong phiên Mỹ có mã bị
+`LUDP`, xem alert của mã đó có dòng halt không.
 
 ---
 
-### PHASE 3 — Catalyst: mã này chạy *vì cái gì*
+### PHASE 3 — Catalyst: mã này chạy *vì cái gì* ✅ ĐÃ XONG
 
-**Vấn đề:** alert hiện tại nói "RVOL 66x, +85%" nhưng không nói **tại sao**.
-Bạn phải tự mở Finviz đi tìm. Mà "tại sao" chính là thứ quyết định nên bỏ qua
-hay để ý — cùng một +85%, do FDA approval khác hoàn toàn do pump vô cớ.
+Đã cài: `news.py`, khối CATALYST trong `render.py`, task `loop_news` trong
+`main.py`, hai cột `news_group`/`news_risk` trong `state/events.jsonl`.
+**Bảng từ khoá và giao ước ba trạng thái ở mục 8** ("Tin tức catalyst").
 
-**Nguồn (đã kiểm chứng, có gói free):**
+Sáu điểm khác với thiết kế ban đầu:
 
+- **Dùng REST (`GET /v1beta1/news`) thay vì websocket.** Websocket cần một máy
+  trạng thái tự kết nối lại và tự phát hiện "chết im lặng" — mà tin tức là
+  chuyện tính bằng phút, còn vòng quét đã là 25 giây. Đổi lại: hàm `parse()`
+  thuần, test được offline, không cần mạng. Lấy tối đa 4 trang mỗi vòng với
+  90 giây chồng lấn, nên lúc 9:30 tin dày cũng không rơi.
+- **Không dùng emoji.** Quy ước `render.py` là tối đa 2 emoji mỗi tin nhắn
+  (mục 9), nên icon 🧬/💧/⛔ được thay bằng nhãn IN HOA tiếng Việt:
+  `PHA LOÃNG — TIN VỪA RA`, `DỮ LIỆU / PHÊ DUYỆT`… Nhãn ⚪ thành một dòng chữ
+  đầy đủ: *"Không thấy tin nào trong 4 giờ qua — chạy không rõ lý do"*.
+- **Nhóm xấu xét trước nhóm tốt.** Tiêu đề gộp cả FDA và chào bán là có thật,
+  và xét nhóm tốt trước thì đúng cái bẫy này lọt lưới.
+- **Chỉ trừ điểm một lần.** Tin *"Pricing of Offering"* và filing `424B5` là
+  cùng một sự kiện, nên `main.py` lấy `max(sec_risk, news_risk)` rồi trừ
+  `SEC_PENALTY` đúng một lần, thay vì trừ hai lần cho cùng một chuyện.
+- **Nhóm tin tốt không cộng điểm** (`risk = 0`). Chưa có số liệu nào chứng minh
+  "có tin FDA" thì alert đúng hơn — để Phase 1 trả lời bằng cột `news_group`,
+  chứ không đoán trước.
+- **Bỏ bài gắn > 4 mã** (`MAX_SYMS`) và **tin xấu thắng tin mới**: hai chi tiết
+  không có trong bản thiết kế nhưng thiếu chúng thì nhãn sai thường xuyên.
+
+**Tiêu chí xong** (≥70% alert có dòng catalyst hoặc nhãn "không rõ lý do") đạt
+được về mặt cấu trúc: hễ feed còn sống thì mọi alert đều có một trong ba thứ —
+tiêu đề đã phân loại, tiêu đề chưa phân loại, hoặc dòng "không thấy tin nào".
+
+**Việc còn lại:** một lần kiểm thật trên VM giữa phiên Mỹ.
+
+```bash
+python news.py --live         # có dòng nào → feed hoạt động (403 = gói free không có news)
 ```
-wss://stream.data.alpaca.markets/v1beta1/news
-```
 
-Đăng ký `{"action":"subscribe","news":["*"]}` rồi nhận từng bài. Trường
-`symbols` là array mã liên quan, `headline`, `source` (thường là Benzinga),
-`created_at`, `url`. Bạn **đã có `ALPACA_KEY`/`ALPACA_SECRET`** nên không cần
-đăng ký gì thêm.
-
-**`news.py` (module mới):** giữ websocket, lưu vào dict cuộn
-`{sym: [(ts, headline, url), ...]}` chỉ giữ 4 giờ gần nhất và bỏ mã không có
-trong universe (để không phình RAM).
-
-**Tích hợp vào `render.py`** — một khối mới đặt **trên** khối WHY, vì tin tức
-quan trọng hơn giải thích điểm:
-
-```
-📰 CATALYST
-   "XYZ Announces FDA Clearance for..."
-   Benzinga · 14 phut truoc · [doc]
-```
-
-**Phân loại từ khoá** để gắn icon và điều chỉnh điểm (đây là nơi giá trị thật
-nằm, không phải ở việc hiển thị):
-
-| Nhóm từ khoá | Icon | Ý nghĩa |
-|---|---|---|
-| `fda approval`, `clearance`, `phase 3`, `topline` | 🧬 | catalyst thật, bền |
-| `contract`, `award`, `partnership`, `acquisition` | 🤝 | catalyst thật |
-| `offering`, `pricing of`, `registered direct`, `atm` | 💧 | **pha loãng — trừ điểm mạnh** |
-| `reverse split` | ⚠️ | tăng giá giả |
-| `nasdaq notification`, `deficiency`, `delisting` | ⛔ | rủi ro cao |
-| không có tin | ⚪ | chạy không có lý do → cẩn thận |
-
-Nhóm 💧 đặc biệt quan trọng: một mã +80% kèm headline "Announces Pricing of
-$15M Registered Direct Offering" là bẫy điển hình — nó vừa in thêm cổ phiếu.
-`edgar.py` của bạn bắt được cái này *sau* khi 424B5 lên EDGAR, nhưng news
-stream bắt được **sớm hơn nhiều**.
-
-**Tiêu chí xong:** ≥70% alert có ít nhất một dòng catalyst hoặc nhãn ⚪ rõ ràng.
-
-**Công sức:** ~200 dòng, cộng thời gian nuôi từ điển từ khoá dần theo thực tế.
+Rồi xem một alert thật có khối CATALYST không. Sau đó là việc dài hạn: nuôi
+`GROUPS` dần bằng cách xem `news_group` nào còn `null` trong `events.jsonl`.
 
 ---
 
-### PHASE 4 — Dọn nợ kỹ thuật (làm khi có 2 tiếng rảnh)
+### PHASE 4 — Dọn nợ kỹ thuật ✅ ĐÃ XONG
 
 Không thêm tính năng, chỉ để những phase sau đỡ đau.
 
-**4a. Gộp `notifier.py` và `tgapi.py`.** Hiện có hai đường gửi Telegram song
-song, `tg_send()` fallback từ cái này sang cái kia. Nó chạy được, nhưng nghĩa
-là logic rate-limit và degradation HTML tồn tại ở hai nơi và sẽ lệch nhau.
-Chọn `tgapi.py` làm đường chính, biến `notifier.py` thành *chỉ* lớp spool
-(hàng đợi lúc mạng chết), bỏ phần format khỏi nó.
+- **4a. Gộp `notifier.py` vào `tgapi.py`.** `tgapi.py` giờ là đường gửi duy
+  nhất; `notifier.py` chỉ còn `class Spool`. Cách hoạt động: **mục 7 → "Đường
+  gửi Telegram"**.
+- **4b. Test.** `tests/` — 11 file, 245 test, chạy được cả bằng `pytest -q` và
+  bằng `python tests/test_x.py` trên máy thiếu thư viện. Cách chạy: **mục 8 →
+  "Test"**.
+- **4c. CI.** `.github/workflows/ci.yml` — hai job: `compile` (không cài gì) và
+  `test` (`pytest -q`).
+- **4d. Log có cấu trúc.** `events.py` → `state/events.jsonl`. Định dạng và cách
+  ghép với bảng `outcome`: **mục 8 → "Log có cấu trúc"**.
 
-**4b. Viết test cho `scorer.py` và `render.py`.** Hai file này là nơi bug
-lặng lẽ nhất — sai trọng số không crash, chỉ ra số vô nghĩa.
+Năm chỗ khác với bản thiết kế ở trên, đều có lý do:
 
-```
-tests/
-  test_scorer.py     # input cố định → điểm cố định, chặn regression
-  test_render.py     # panel <pre> phải thuần ASCII, len < SAFE_LEN,
-                     # HTML tag phải cân, không lọt tag lạ
-  test_clock.py      # premarket/regular/afterhours/closed + biên DST
-  test_edgar.py      # assess() với filing giả, kiểm cờ pha loãng
-```
+- **Trần `PER_MIN` chỉ áp cho `sendMessage`.** Bản `notifier` cũ throttle mọi
+  thứ. Nếu áp cả cho `answerCallbackQuery` thì người bấm nút có thể phải chờ hết
+  60 giây mới thấy phản hồi — mà nút chỉ còn hiệu lực vài giây.
+- **`_call` trả về bốn loại giá trị**, và `send()` phải kiểm `res is True` trước
+  mọi phép kiểm số: `isinstance(True, int)` là `True`. Vì vậy chỉ báo lỗi 400 là
+  **chuỗi** `BAD_REQ`, không phải số — nếu là số thì tin lỗi format sẽ bị nhầm
+  thành `message_id` và coi như đã gửi. Hạ cấp HTML chỉ chạy khi lỗi *nội dung*;
+  mất mạng thì dừng ngay vì bỏ tag không cứu được mạng.
+- **`esc()` chỉ còn một bản, trong `render.py`.** Trước có hai bản giống nhau ở
+  `render.py` và `notifier.py` — đúng loại trùng lặp sẽ lệch nhau.
+- **`test_clock.py` không hardcode 09:30/16:00**, mà lấy `open_et`/`close_et` từ
+  chính clock rồi kiểm máy trạng thái quanh đó. DST hay giờ giao dịch đổi thì
+  test vẫn đúng thay vì đỏ giả. Test nửa phiên tự bỏ qua nếu
+  `pandas_market_calendars` không đồng ý về ngày đó.
+- **Một số test khoá cả *giao ước giữa các file*, không chỉ hành vi một hàm**:
+  `test_scorer` khoá bộ trọng số (đổi trọng số phải là hành động có ý thức, vì
+  nó làm số liệu Phase 1 đang tích luỹ mất khả năng so sánh);
+  `test_events` khoá khoá join `(sym, int(ts))` với bảng `outcome`;
+  `test_notifier`/`test_tgapi` khoá việc `notifier.py` không được gọi mạng nữa.
 
-Chạy bằng `pytest -q`. Test 4b đáng giá nhất là **`render` với dữ liệu thiếu**:
-`float_sh=None`, `cik=None`, `explain=""` — đó là chỗ hay `TypeError` giữa
-phiên.
-
-**4c. GitHub Actions.** Một file `.github/workflows/ci.yml` chạy `pytest` +
-`python -m compileall` mỗi lần push. Bạn deploy bằng `git pull` nên bug syntax
-push lên là service crash-loop; CI bắt trước.
-
-**4d. Log có cấu trúc.** Hiện log là chuỗi tiếng Việt cho người đọc. Thêm một
-file thứ hai `state/events.jsonl` ghi mỗi alert dạng JSON một dòng. Phase 1
-cần cái này để phân tích, và `grep` trên log tiếng Việt sẽ không bao giờ đủ.
+**Việc còn lại:** trên VM, `pytest -q` một lần với đủ thư viện — `test_clock.py`
+và các test cần pandas/tzdata chỉ thật sự chạy ở đó.
 
 ---
 
@@ -1497,18 +1793,25 @@ của việc chỉnh panel giờ gần bằng không so với việc biết aler
 ### Thứ tự đề xuất
 
 ```
-Tuần 1-2   Phase 1 (outcome tracking)   ← chạy nền, thu số liệu
-           Phase 2 (halt feed)          ← xong trong một buổi tối
-Tuần 3     Phase 4 (test + CI)          ← trong lúc chờ số liệu Phase 1
-Tuần 4     Đọc bảng Phase 1 → chỉnh ALERT_SCORE và trọng số
-Tuần 5-6   Phase 3 (catalyst/news)
-Sau đó     Phase 5, 6, 7 tuỳ chỗ nào làm bạn khó chịu nhất
-Để dành    Phase 8
+✅ Phase 1 (outcome tracking)   ← ĐÃ CÀI, đang chạy nền thu số liệu
+✅ Phase 2 (halt feed)          ← ĐÃ CÀI
+✅ Phase 4 (test + CI)          ← ĐÃ CÀI
+✅ Phase 3 (catalyst/news)      ← ĐÃ CÀI, còn chờ một lần kiểm live
+▶  Đọc bảng Phase 1 → chỉnh ALERT_SCORE và trọng số   (cần ~3-4 tuần dữ liệu)
+   Trong lúc chờ: Phase 5 (bớt rác, bớt trùng) — rẻ nhất trong ba phase còn lại
+   Sau đó Phase 6, 7 tuỳ chỗ nào làm bạn khó chịu nhất
+   Để dành Phase 8
 ```
 
-Điểm quan trọng nhất của thứ tự này: **Phase 1 và 2 xong trong khoảng một
-tuần công sức, nhưng Phase 1 cần vài tuần *thời gian* để tích dữ liệu.** Nên
-viết nó trước, rồi làm việc khác trong lúc nó thu số liệu. Đừng đợi.
+Điểm quan trọng nhất của thứ tự này: **Phase 1 chỉ mất một buổi để viết, nhưng
+cần vài tuần *thời gian* để tích dữ liệu.** Nó đã chạy từ lúc cài, nên đừng ngồi
+đợi bảng số — cả bốn phase code đã xong, giờ làm Phase 5 trong lúc chờ.
+
+Cũng vì vậy mà Phase 3 nên làm trước Phase 5: `news_group` càng có sớm thì bảng
+Phase 1 càng trả lời được nhiều câu hơn khi đủ mẫu.
+
+Giờ đã có test và CI thì mọi chỉnh sửa sau này đều rẻ hơn: sai trọng số hay lệch
+layout bị bắt trước khi `git pull` lên VM.
 
 ## Giấy phép
 

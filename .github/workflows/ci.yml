@@ -1,0 +1,83 @@
+# CI — chay tren GitHub vi may dev khong cai duoc thu vien (README mục 8 "Test").
+#
+# Hai job co muc dich khac nhau:
+#   compile — KHONG cai gi. Bat loi cu phap. VM deploy bang `git pull` roi
+#             restart: mot loi cu phap la service crash-loop suot phien.
+#   test    — cai day requirements.txt roi `pytest -q`. Day la NOI DUY NHAT
+#             cac test can pandas/tzdata thuc su chay.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  compile:
+    name: bien dich (khong thu vien)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.12', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: compileall
+        run: python -m compileall -q .
+
+      - name: Selftest khong can mang
+        run: |
+          python halts.py          # selftest parser feed halt
+          python news.py           # bang tu khoa catalyst + so tay cuon 4 gio
+          python render.py > /dev/null
+          python outcome.py        # khong doi so = _smoke()
+          python events.py         # khong doi so = _smoke()
+          python notifier.py       # spool: giu tin, dung thu tu
+
+      - name: Test chay duoc ma khong co thu vien
+        # Cac file test tu bo qua khi thieu thu vien (tests/_util.py: need()).
+        # Buoc nay dam bao chinh co che do khong bi hong.
+        run: |
+          set -e
+          for f in tests/test_*.py; do
+            echo "== $f"
+            python "$f"
+          done
+
+  test:
+    name: pytest (day thu vien)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+          cache: pip
+
+      - name: Cai thu vien
+        # requirements.txt la pip freeze cua VM that: pin vo la o day bao truoc
+        # khi `git pull` tren VM bao.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: pytest
+        run: |
+          set -o pipefail
+          pytest -q -rs | tee pytest.txt
+
+      - name: Bao neu con test bi bo qua
+        # Da cai day thu vien thi khong con ly do bo qua — tru vai test phu
+        # thuoc lich NYSE. Canh bao chu khong fail: bo qua khong phai loi.
+        if: always()
+        run: |
+          if grep -qE '[0-9]+ skipped' pytest.txt; then
+            echo "::warning::Con test bi bo qua du da cai day thu vien"
+            grep -E '^SKIPPED' pytest.txt || true
+          fi

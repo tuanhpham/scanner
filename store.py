@@ -76,7 +76,7 @@ def put_snap(db, sym: str, snap: dict) -> None:
                 "UPDATE alert_msg SET snap=?, ts=? WHERE sym=? AND day=?",
                 (json.dumps(snap or {}, ensure_ascii=False), _now(),
                  sym, _today())).rowcount
-            if not n:      # chua co dong nao (vd alert gui qua notifier cu)
+            if not n:      # chua co dong nao (vd alert phai gui bu qua spool)
                 c.execute(
                     "INSERT INTO alert_msg(sym,day,message_id,snap,ts) "
                     "VALUES(?,?,?,?,?)",
