@@ -66,19 +66,19 @@ MAX_SYMS = 4
 # lam ma chay xa hon, cong diem bay gio la doan bua.
 GROUPS: tuple[tuple[str, str, float, str, tuple[str, ...]], ...] = (
     ("BANKRUPT", "PHÁ SẢN / MẤT THANH KHOẢN", 3.0,
-     "Cong ty dang trong thu tuc pha san. Co phieu thuong ve 0.",
+     "Công ty đang trong thủ tục phá sản. Cổ phiếu thường về 0.",
      ("chapter 11", "chapter 7", "bankruptcy", "bankrupt", "receivership",
       "insolvency", "liquidation", "going concern", "wind-down", "winding down")),
 
     ("DELIST", "NGUY CƠ HỦY NIÊM YẾT", 3.0,
-     "San da gui thong bao khong tuan thu. Rui ro bi day xuong OTC.",
+     "Sàn đã gửi thông báo không tuân thủ. Rủi ro bị đẩy xuống OTC.",
      ("delisting", "delisted", "deficiency", "deficiency letter",
       "non-compliance", "noncompliance", "not in compliance",
       "minimum bid price", "listing qualification", "listing rule",
       "hearings panel", "form 25", "compliance period", "stockholders equity requirement")),
 
     ("DILUTION", "PHA LOÃNG — TIN VỪA RA", 3.0,
-     "Cong ty ban them co phieu. Gia tang hom nay khong phai vi hoat dong tot.",
+     "Công ty bán thêm cổ phiếu. Giá tăng hôm nay không phải vì hoạt động tốt.",
      ("pricing of", "priced offering", "public offering", "offering of",
       "proposed offering", "announces offering", "unit offering",
       "best efforts offering", "underwritten offering", "underwritten public",
@@ -92,7 +92,7 @@ GROUPS: tuple[tuple[str, str, float, str, tuple[str, ...]], ...] = (
       "dilution", "dilutive", "capital raise", "raises $", "s-1", "s-3")),
 
     ("SPLIT", "GỘP CỔ PHIẾU (REVERSE SPLIT)", 2.0,
-     "Gia tang vi so co phieu giam, khong phai vi cong ty tot hon.",
+     "Giá tăng vì số cổ phiếu giảm, không phải vì công ty tốt hơn.",
      ("reverse split", "reverse stock split", "share consolidation",
       "ratio change")),
 

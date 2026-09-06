@@ -53,7 +53,8 @@ MIN15, MIN60 = 15 * 60, 60 * 60
 FILL_TOL = 240       # giay: cua so cho phep khi dien px15/px60 tu vong quet
                      # (vong chay moi 60s, 4 phut du de restart giua duong)
 
-# Nguong chia nhom diem. 12.0 la SCORE_MAX cua render.py (= muc 3).
+# Nguong chia nhom diem. 12.0 la render.T_EXTREME (= muc 3), khong phai
+# SCORE_MAX (mau so cua thanh diem, 15.0): nhom cuoi la "moi alert muc 3".
 BUCKETS = ((7.0, 8.0), (8.0, 9.0), (9.0, 10.0), (10.0, 12.0), (12.0, 1e9))
 
 DDL = """

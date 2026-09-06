@@ -42,7 +42,11 @@ from dataclasses import dataclass
 from typing import Any
 
 # ───────────────────────── cau hinh hien thi ─────────────────────────
-SCORE_MAX   = 12.0        # diem toi da de ve bar
+# SCORE_MAX phai LON HON T_EXTREME. Khi bang nhau (ca hai tung la 12.0) thi moi
+# alert muc 3 deu hien thanh day va tu so vuot mau so ("12.4/12"), tuc la tu muc
+# 3 tro len cai thanh khong con phan biet duoc 12.4 voi 14.
+# Tran ly thuyet cua scorer: 2.2*2.0 + 1.6*3 + 1.4*3 + 0.5*1.5 + 1.5 = 15.65.
+SCORE_MAX   = 15.0        # mau so cua thanh diem
 BAR_CELLS   = 10
 T_EXTREME   = 12.0
 T_STRONG    = 8.0
@@ -75,13 +79,31 @@ TV_URL = os.getenv("TV_URL", "").strip() \
 W_IND, W_LAB, W_VAL, W_DLT = 2, 11, 8, 6
 
 # Uu tien giu lai khi tin nhan vuot SAFE_LEN — khoi diem thap bi bo truoc.
-# P_HALT cao hon ca header: dang bi tam dung thi moi so lieu con lai la thu yeu.
-# P_NEWS tren P_SEC: khoi CATALYST chi 3-4 dong ma noi duoc "vi sao chay", bo
-# no de giu danh sach ho so SEC la nguoc thu tu gia tri.
-P_HALT, P_HEAD, P_FOOT, P_DATA, P_BADGE, P_RISK, P_NEWS, P_SEC, P_WHY = \
+#
+# Thang do khong phai "cai nao quan trong hon" ma la GIA TRI / DO DAI: cat de
+# lay lai do dai, nen khoi to va it thong tin moi phai di truoc.
+#
+#   P_HALT   cao hon ca header — dang bi tam dung thi moi so lieu la thu yeu.
+#   P_FOOT   tren DATA: FOOT dai MOT dong (~90 ky tu) nen bo no gan nhu khong
+#            cuu duoc gi, ma mat han cau "khong phai loi khuyen dau tu".
+#   P_RISK   tren DATA: khoi RUI RO la noi DUY NHAT ket luan ve pha loang /
+#            pha san / huy niem yet. Truoc day RISK (5) < DATA (7), nghia la
+#            mot tin nhan dai se giu panel so lieu dep va bo canh bao.
+#   P_NEWS   tren DATA, duoi RISK: mat CATALYST la mat tieu de tin, con canh
+#            bao thi RUI RO da giu (render_risk doc dilution_risk = max cua
+#            sec_risk va news_risk nhom DILUTION).
+#   P_DATA   la khoi <pre> 8-12 dong va la khoi lap lai nhieu nhat: gia/%/diem
+#            da o header, rvol/atr/quay vong lap lai trong khoi VI SAO.
+#   P_SEC, P_WHY  di dau tien: ca hai la blockquote expandable, nguoi doc phai
+#            bam moi thay, va deu tra loi duoc bang nut Finviz / Ho so SEC.
+P_HALT, P_HEAD, P_FOOT, P_BADGE, P_RISK, P_NEWS, P_DATA, P_SEC, P_WHY = \
     10, 9, 8, 7, 6, 5, 4, 3, 2
 
 NEWS_HEAD_MAX = 170     # tieu de dai hon the nay bi cat — Benzinga co ban 200+
+
+# Nhom tin (news.py GROUPS) sinh mot muc trong khoi RUI RO, kem do nghiem trong.
+# DILUTION khong o day: no gop voi sec_risk qua AlertView.dilution_risk.
+RISK_GROUPS = {"BANKRUPT": 3, "DELIST": 3, "SPLIT": 2}
 
 TXT = {
     # xep loai muc do — den mau la emoji DUY NHAT o header
@@ -122,9 +144,11 @@ TXT = {
     "r_vol_n": "Biên độ {a:.1f} lần ATR ngày thường.",
     "r_float_n": "Sổ lệnh mỏng, giá giật mạnh theo cả hai chiều.",
     "r_micro_n": "Spread rộng, trượt giá lớn khi vào và ra.",
-    # ket luan SEC
+    # ket luan SEC — ba trang thai khac nhau, khong duoc noi gop
     "sec_clean": "Không thấy dấu hiệu pha loãng",
+    "sec_empty": "Không có hồ sơ nào trong 120 ngày qua",
     "sec_none": "Không tra được hồ sơ (thiếu CIK)",
+    "sec_err": "Chưa tra được EDGAR lúc này",
     "sec_earn": "Vừa báo cáo kết quả kinh doanh",
     # the canh bao — chi ten the, so lieu da co o panel/header
     "b_low_float": "FLOAT THẤP", "b_micro_float": "FLOAT SIÊU NHỎ",
@@ -270,14 +294,50 @@ class AlertView:
         return bool(self.sec) and (self.sec.get("n") or 0) > 0
 
     @property
+    def sec_status(self) -> str:
+        """"ok" | "no_cik" | "error" | "unknown" — xem edgar.scan().
+
+        sec=None nghia la main.py chua tra duoc (assess nem loi) -> "unknown".
+        Dict cu khong co khoa "status" cung ve "unknown": khong bao gio doan
+        thanh "thieu CIK", vi doan sai o day la noi ma sach thanh ma thieu
+        du lieu.
+        """
+        if not self.sec:
+            return "unknown"
+        return str(self.sec.get("status") or "unknown")
+
+    @property
     def news_risk(self) -> float:
         return float((self.news or {}).get("risk") or 0.0)
+
+    @property
+    def news_group(self) -> str | None:
+        return (self.news or {}).get("group")
+
+    @property
+    def dilution_risk(self) -> float:
+        """Rui ro pha loang tu CA HAI nguon, lay cai nang hon.
+
+        Ban tin "Announces Pricing of Offering" ra truoc khi 424B5 len EDGAR
+        vai gio, nen luc do sec_risk van 0. Chi doc sec_risk thi canh bao pha
+        loang chi nam trong khoi CATALYST — va CATALYST la khoi bi bo som khi
+        tin qua dai.
+
+        Chi tinh nhom DILUTION: news_risk cung la 3.0 cho BANKRUPT/DELIST, ma
+        goi pha san la "pha loang" thi sai han. main.py tru diem theo max cua
+        MOI nhom xau (muc dich khac: bot diem, khong dat nhan).
+        """
+        n = self.news_risk if self.news_group == "DILUTION" else 0.0
+        return max(self.sec_risk, n)
 
     @property
     def level(self) -> int:
         if self.score >= T_EXTREME:
             return 3
-        if (self.sec_risk >= SEC_HIGH and (self.rvol or 0) >= HOT_RVOL
+        # Bom gia tren tin phat hanh: rui ro pha loang cao + khoi luong nong +
+        # quay vong manh. Doc dilution_risk chu khong phai sec_risk, khong thi
+        # ma co tin chao ban ma 424B5 chua len EDGAR se tut xuong muc 2.
+        if (self.dilution_risk >= SEC_HIGH and (self.rvol or 0) >= HOT_RVOL
                 and (self.float_rot or 0) >= 2.0):
             return 3
         return 2 if self.score >= T_STRONG else 1
@@ -381,6 +441,14 @@ def _link(url: str, label: str) -> str:
             if u.startswith(("http://", "https://")) else esc(label))
 
 
+def _risk_says(v: AlertView) -> bool:
+    """Khoi RUI RO co noi ve nhom tin nay chua? (de khong noi hai lan)"""
+    g = v.news_group
+    if g in RISK_GROUPS:
+        return True
+    return g == "DILUTION" and v.dilution_risk >= SEC_MID
+
+
 def render_news(v: AlertView) -> list[str]:
     """Khoi CATALYST — dat TREN so lieu: "vi sao chay" doc truoc "chay bao nhieu".
 
@@ -400,27 +468,38 @@ def render_news(v: AlertView) -> list[str]:
         head = head[:NEWS_HEAD_MAX].rsplit(" ", 1)[0] + "…"
 
     body: list[str] = []
-    if n.get("label"):
+    # Nhom xau da co nhan VA cau giai thich trong khoi RUI RO — o day chi con
+    # tieu de tin. Nhom tot khong xuat hien o RUI RO nen giu nhan tai day.
+    if n.get("label") and not _risk_says(v):
         body.append(f"<b>{esc(n['label'])}</b>")
     body.append(_link(n.get("url") or "", head))
     meta = [x for x in (esc(n.get("source") or ""), _ago(n.get("age") or 0)) if x]
     if (n.get("n") or 0) > 1:
         meta.append(TXT["n_more"].format(n=n["n"] - 1))
     body.append(f"<i>{' · '.join(meta)}</i>")
-    # Giai thich chi hien cho nhom xau: nhom tot khong can day ai ra quyet dinh.
-    if n.get("note") and v.news_risk > 0:
-        body.append(f"<i>{esc(n['note'])}</i>")
     return [TXT["h_news"], _quote("\n".join(body))]
 
 
 # ───────────────────────── RISK ─────────────────────────
 def render_risk(v: AlertView, max_items: int = 3) -> list[str]:
-    """Muc da sap theo do nghiem trong nen khong can den mau danh dau."""
+    """Muc da sap theo do nghiem trong nen khong can den mau danh dau.
+
+    Day la khoi KET LUAN. Nhan va cau giai thich cua nhom tin xau nam o day,
+    con khoi CATALYST chi giu tieu de tin — de khong noi cung mot cau hai lan
+    trong mot tin nhan (giong cach khoi SEC chi liet ke ho so khi RUI RO da
+    ket luan giup).
+    """
     items: list[tuple[int, str, str]] = []
-    if v.sec_risk >= SEC_HIGH:
+    if v.dilution_risk >= SEC_HIGH:
         items.append((3, TXT["r_dil_hi"], TXT["r_dil_hi_n"]))
-    elif v.sec_risk >= SEC_MID:
+    elif v.dilution_risk >= SEC_MID:
         items.append((2, TXT["r_dil_mid"], TXT["r_dil_mid_n"]))
+    # Pha san / huy niem yet / gop co phieu: lay nguyen nhan + giai thich tu
+    # news.py, khong chep lai chuoi sang day de hai bang khong lech nhau.
+    if (sev := RISK_GROUPS.get(v.news_group or "")):
+        n = v.news or {}
+        if n.get("label"):
+            items.append((sev, n["label"], n.get("note") or ""))
     if (v.atr_move or 0) >= HOT_ATR:
         items.append((2, TXT["r_vol"], TXT["r_vol_n"].format(a=v.atr_move)))
     if v.low_float and (v.float_rot or 0) >= 2.0:
@@ -438,7 +517,8 @@ def render_risk(v: AlertView, max_items: int = 3) -> list[str]:
         if i:
             body.append("")
         body.append(f"<b>{esc(title)}</b>")
-        body.append(f"<i>{esc(note)}</i>")
+        if note:                       # nhan tu news.py co the khong co note
+            body.append(f"<i>{esc(note)}</i>")
     return [TXT["h_risk"], _quote("\n".join(body))]
 
 
@@ -457,11 +537,21 @@ def _sec_lines(v: AlertView) -> list[str]:
             for f in (s.get("flags") or [])[:5]]
 
 
+SEC_EMPTY = {"ok": "sec_empty", "no_cik": "sec_none", "error": "sec_err",
+             "unknown": "sec_err"}
+
+
 def render_sec(v: AlertView) -> list[str]:
     """Rui ro cao -> chi liet ke ho so, vi khoi RUI RO da ket luan giup.
-    Rui ro thap -> can mot dong ket luan, khong thi nguoi doc phai tu suy."""
+    Rui ro thap -> can mot dong ket luan, khong thi nguoi doc phai tu suy.
+
+    Khong co ho so nao thi phai noi RO la vi sao khong co: "khong phat hanh gi
+    trong 120 ngay" (ket luan tot cho ma) khac han "thieu CIK" hay "EDGAR loi"
+    (khong biet). Gop ba cai lam mot la vu oan mot ma sach.
+    """
     if not v.has_sec:
-        return [TXT["h_sec"], f"<i>{TXT['sec_none']}</i>"]
+        key = SEC_EMPTY.get(v.sec_status, "sec_err")
+        return [TXT["h_sec"], f"<i>{TXT[key]}</i>"]
     body = _sec_lines(v)
     if v.sec_risk < SEC_MID:
         tag = TXT["sec_earn"] if (v.sec or {}).get("earn") else TXT["sec_clean"]
@@ -828,10 +918,17 @@ if __name__ == "__main__":
         _got = [x for x in degrade(_txt, 3).split("\n") if x.strip()]
         _i = _got.index("CATALYST")
         print(f"catalyst {_s:<6}: " + " / ".join(_got[_i + 1:_i + 4]))
-    # Ma pha loang phai co nhan nhom, va nhan do phai den TU news.py.
-    _v = AlertView.from_scan(_DEMO, sec=_DEMO_SEC, news=_nb.view("WETO", _now))
+    # Ma pha loang: KET LUAN nam o khoi RUI RO (khong phu thuoc sec_risk), con
+    # CATALYST chi giu tieu de tin — nhan nhom khong duoc in hai lan.
+    _v = AlertView.from_scan(_DEMO, sec={"risk": 0.0, "n": 0, "detail": [],
+                                         "status": "ok"},
+                             news=_nb.view("WETO", _now))
     assert _v.news_risk >= news.NEWS_RISK_MAX
-    assert "PHA LOÃNG — TIN VỪA RA" in render_alert(_v)
+    assert _v.dilution_risk >= SEC_HIGH, "tin chao ban phai tu no du canh bao"
+    _t1 = render_alert(_v)
+    assert TXT["r_dil_hi"] in _t1
+    assert _t1.count("PHA LOÃNG — TIN VỪA RA") == 0, "nhan da co o RUI RO"
+    print("tin chao ban -> canh bao o RUI RO du SEC chua thay gi: OK")
     # Khoi CATALYST phai nam TREN khoi SO LIEU va TREN khoi VI SAO.
     _v.detail = True
     _t2 = render_alert(_v)

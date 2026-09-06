@@ -106,14 +106,26 @@ def _fetch(cik: str) -> dict | None:
         return None
 
 
-def filings(sym: str, days: int = SHELF_DAYS) -> list[dict]:
-    """Danh sach ho so trong N ngay gan nhat."""
+def scan(sym: str, days: int = SHELF_DAYS) -> tuple[list[dict], str]:
+    """Ho so trong N ngay gan nhat, KEM trang thai tra cuu.
+
+    Ba truong hop khac nhau ma neu tron lai thi alert noi sai:
+
+        "no_cik"  chua co CIK trong bang base -> khong tra duoc
+        "error"   co CIK nhung EDGAR loi/rate-limit -> KHONG BIET
+        "ok"      tra duoc that. Danh sach rong nghia la MA SACH, khong
+                  phat hanh gi trong N ngay - day la ket luan, khong phai
+                  thieu du lieu.
+
+    Truoc day ca ba deu tra ve [] nen render.py in "thieu CIK" cho ca ma
+    sach. Giong giao uoc None/n=0 cua news.NewsBook.view().
+    """
     cik = _cik(sym)
     if not cik:
-        return []
+        return [], "no_cik"
     data = _fetch(cik)
     if not data:
-        return []
+        return [], "error"
     rec = data.get("filings", {}).get("recent", {})
     forms = rec.get("form", [])
     dates = rec.get("filingDate", [])
@@ -141,15 +153,25 @@ def filings(sym: str, days: int = SHELF_DAYS) -> list[dict]:
                                   acc_nodash=acc.replace("-", ""),
                                   doc=docs[i] if i < len(docs) else ""),
         })
-    return out
+    return out, "ok"
+
+
+def filings(sym: str, days: int = SHELF_DAYS) -> list[dict]:
+    """Danh sach ho so trong N ngay gan nhat. Bo trang thai di."""
+    return scan(sym, days)[0]
+
+
+_NOTE = {"no_cik": "thiếu CIK trong bảng base",
+         "error": "không tra được EDGAR lúc này",
+         "ok": "không có hồ sơ nào trong 120 ngày"}
 
 
 def assess(sym: str) -> dict:
     """Chấm điểm rủi ro từ hồ sơ SEC. Dương = nguy hiểm, âm = tích cực."""
-    fs = filings(sym)
+    fs, status = scan(sym)
     if not fs:
         return {"sym": sym, "risk": 0.0, "flags": [], "n": 0, "earn": False,
-                "note": "không có hồ sơ / thiếu CIK"}
+                "status": status, "note": _NOTE.get(status, _NOTE["error"])}
     risk = 0.0
     flags: list[str] = []
     earn = False
@@ -193,7 +215,7 @@ def assess(sym: str) -> dict:
         detail.append({"form": f["form"], "age": f["age"],
                        "desc": FORMS[f["form"]][2], "n": cnt[f["form"]]})
     return {"sym": sym, "risk": round(risk, 1), "flags": flags[:6],
-            "n": len(fs), "top": fs[0] if fs else None,
+            "n": len(fs), "top": fs[0] if fs else None, "status": status,
             "earn": earn, "detail": detail[:5]}
 
 def label(risk: float, earn: bool = False) -> str:
@@ -212,7 +234,7 @@ def block(sym: str, max_flags: int = 3) -> list[str]:
     """Vài dòng mô tả hồ sơ SEC cho tin nhắn Telegram."""
     a = assess(sym)
     if a["n"] == 0:
-        return ["⚪ Không tra được hồ sơ"]
+        return ["⚪ " + a.get("note", "không tra được hồ sơ")]
     cnt = Counter(f["form"] for f in filings(sym))
     out, seen_form = [], set()
     for fl in a["flags"]:
@@ -230,7 +252,7 @@ def line(sym: str) -> str:
     """Một dòng ngắn gọn để đặt vào alert Telegram."""
     a = assess(sym)
     if a["n"] == 0:
-        return "SEC: không tra được hồ sơ"
+        return "SEC: " + a.get("note", "không tra được hồ sơ")
     head = f"SEC: {label(a['risk'], a.get('earn', False))}"
     return head + ("\n" + "\n".join("· " + f for f in a["flags"][:3])
                    if a["flags"] else "")

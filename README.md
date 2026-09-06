@@ -773,16 +773,14 @@ từ 15:42 ET · chưa có giờ mở lại — Tin CHƯA ra. Không ai biết g
 
 🔴 WETO · $10.61 · ▲ +85.5%             ← HEADER
 EXTREME EVENT · Tín hiệu mới
-██████████ 12.4/12
+████████░░ 12.4/15
 Realtime · 15:42 ET · phút 12/390
 
 ⚠️ ÁP LỰC FLOAT                         ← BADGE
 
 CATALYST                                ← NEWS (blockquote, chỉ khi feed sống)
-PHA LOÃNG — TIN VỪA RA
 Weto Inc Announces Pricing of $15.0 Million Registered Direct Offering
 Benzinga · 30 phút trước · còn 1 tin khác
-Công ty đang bán thêm cổ phiếu. Giá tăng hôm nay không phải vì hoạt động tốt.
 
 SỐ LIỆU                                 ← DATA (khối <pre>, ASCII, cột thẳng)
 FLOW
@@ -842,11 +840,24 @@ Dữ liệu thô, chưa kiểm chứng · Không phải lời khuyên đầu tư
   canh phải 8 ký tự, delta cột riêng (`W_IND`, `W_LAB`, `W_VAL`, `W_DLT`).
 - **Không có dòng link chữ ở cuối** — inline keyboard đã có sẵn các nút đó.
 - **Tin quá 3800 ký tự** → bỏ **cả khối** theo thứ tự ưu tiên
-  (WHY → SEC → CATALYST → RISK → BADGE...), không bao giờ cắt giữa tag HTML.
-  HALT có ưu tiên cao nhất (`P_HALT = 10`, trên cả HEADER): đang bị dừng giao
-  dịch thì mọi số liệu còn lại đều là thứ yếu. CATALYST (`P_NEWS = 4`) đứng
-  trên HỒ SƠ SEC: 4 dòng nói được "vì sao chạy" thì đáng giữ hơn danh sách
-  biểu mẫu.
+  (WHY → SEC → SỐ LIỆU → CATALYST → RISK → BADGE → FOOT → HEADER → HALT),
+  không bao giờ cắt giữa tag HTML. Thang ưu tiên là **giá trị / độ dài**, không
+  phải "khối nào quan trọng hơn":
+
+  | Khối | P | Vì sao ở đó |
+  |---|---|---|
+  | HALT | 10 | Đang bị dừng giao dịch thì mọi số liệu còn lại là thứ yếu |
+  | HEADER | 9 | Mã, giá, %, điểm, mức độ — bỏ là không còn gì để đọc |
+  | FOOT | 8 | Dài **một dòng** (~90 ký tự): bỏ nó gần như không tiết kiệm gì |
+  | BADGE | 7 | Một dòng |
+  | RISK | 6 | Nơi **duy nhất** kết luận về pha loãng / phá sản / hủy niêm yết |
+  | CATALYST | 5 | Mất nó là mất tiêu đề tin, nhưng cảnh báo vẫn còn ở RISK |
+  | SỐ LIỆU | 4 | `<pre>` 8–12 dòng, và là khối lặp lại nhiều nhất |
+  | SEC, WHY | 3, 2 | Cả hai là `blockquote expandable` — phải bấm mới mở |
+
+  `P_FOOT` trên `P_DATA` nhìn có vẻ ngược (bỏ số liệu mà giữ dòng miễn trừ),
+  nhưng bỏ FOOT chỉ tiết kiệm 90 ký tự trong khi HEADER vẫn còn giá, %, điểm,
+  thanh điểm và mức độ — không có chuyện "alert không còn số nào".
 
 ### Các nút bấm
 
@@ -1312,11 +1323,42 @@ Và một giao ước ba trạng thái, giống `halts.py`:
 |---|---|---|
 | `None` | **không biết** — chưa có key, hoặc feed chết > 3 phút | không có khối CATALYST |
 | `{"n": 0, …}` | feed sống và **thật sự không có tin** | "Không thấy tin nào trong 4 giờ qua — chạy không rõ lý do" |
-| có bản ghi | tin xấu nhất trong 4 giờ | nhãn + tiêu đề (link) + nguồn · bao lâu trước |
+| có bản ghi | tin xấu nhất trong 4 giờ | tiêu đề (link) + nguồn · bao lâu trước; nhãn nhóm chỉ khi RỦI RO không nói (xem dưới) |
 
 Một điểm dễ sai nếu sau này sửa `main.py`: tin pha loãng và filing 424B5 là
 **cùng một sự kiện**, nên `SEC_PENALTY` bị trừ **đúng một lần** qua
 `max(sec_risk, news_risk)`. Có một test khoá đúng điều này lại.
+
+**Cảnh báo từ tin nằm ở khối RỦI RO, không ở CATALYST.** Đây là chỗ dễ mất
+cảnh báo nhất nên nói rõ:
+
+- `AlertView.dilution_risk = max(sec_risk, news_risk nếu nhóm là PHA LOÃNG)`.
+  Cả `level` và `render_risk()` đọc thuộc tính này, nên tin *"Pricing of
+  Offering"* tự nó đủ để lên mức 3 và tự nó đủ để in "PHA LOÃNG — CAO", kể cả
+  khi 424B5 chưa về tới EDGAR (`sec_risk = 0`).
+- Chỉ nhóm `DILUTION` được cộng vào đó. `news_risk` cũng là `3.0` cho
+  `BANKRUPT` và `DELIST`, mà gọi phá sản là "pha loãng" thì sai hẳn — ba nhóm
+  `BANKRUPT` / `DELIST` / `SPLIT` có mục riêng trong RỦI RO, lấy nguyên
+  `label` + `note` từ `news.py` (`render.RISK_GROUPS`).
+- Vì vậy CATALYST **không in lại** nhãn của nhóm xấu: RỦI RO là khối *kết
+  luận*, CATALYST là khối *bằng chứng* (tiêu đề tin + nguồn · tuổi). Nhóm tốt
+  không xuất hiện ở RỦI RO nên vẫn giữ nhãn ở CATALYST.
+- Ưu tiên cắt: `P_RISK = 6 > P_NEWS = 5 > P_DATA = 4`. Tin dài thì mất tiêu đề
+  tin trước, mất số liệu trước, nhưng kết luận pha loãng là thứ gần cuối cùng
+  bị bỏ.
+
+**Hồ sơ SEC cũng có giao ước ba trạng thái** (`edgar.scan()` trả
+`(danh_sách, status)`), vì trước đây cả ba lý do "không có hồ sơ" đều in
+"thiếu CIK" — vu oan một mã sạch:
+
+| `status` | Nghĩa | Khối HỒ SƠ SEC in |
+|---|---|---|
+| `ok` + danh sách rỗng | tra được, mã **không phát hành gì** trong 120 ngày | "Không có hồ sơ nào trong 120 ngày qua" |
+| `no_cik` | chưa có CIK trong bảng `base` → không tra được | "Không tra được hồ sơ (thiếu CIK)" |
+| `error` | có CIK nhưng EDGAR lỗi / rate-limit → **không biết** | "Chưa tra được EDGAR lúc này" |
+
+`assess()` chuyển tiếp `status` và một câu `note` tương ứng; `filings()` vẫn
+còn để tương thích, nó chỉ bỏ `status` đi.
 
 **Tiêu chí xong:** ≥70% alert có ít nhất một dòng catalyst hoặc nhãn "không rõ
 lý do" rõ ràng. Kiểm nhanh:
@@ -1421,17 +1463,26 @@ W_RVOL, W_ATR, W_ROT, W_DV, W_FRESH = 2.2, 1.6, 1.4, 0.5, 1.5
 **`render.py`** — hiển thị
 ```python
 T_STRONG, T_EXTREME = 8.0, 12.0        # ngưỡng mức 2 và mức 3
-SCORE_MAX, BAR_CELLS = 12.0, 10        # thang của thanh điểm
+SCORE_MAX, BAR_CELLS = 15.0, 10        # thang của thanh điểm
 W_IND, W_LAB, W_VAL, W_DLT = 2, 11, 8, 6   # 4 cột trong panel <pre>
 SAFE_LEN = 3800           # vượt ngưỡng này thì bỏ bớt khối
 NEWS_HEAD_MAX = 170       # cắt tiêu đề tin dài hơn thế
+RISK_GROUPS = {"BANKRUPT": 3, "DELIST": 3, "SPLIT": 2}   # nhóm tin → mục RỦI RO
 EXPANDABLE = True         # <blockquote expandable>, cần Bot API >= 7.3
 ASK_MAX = 700             # độ dài prompt của nút Hỏi ChatGPT
 ```
 
+`SCORE_MAX` **phải lớn hơn** `T_EXTREME`. Khi hai số bằng nhau (cả hai từng là
+`12.0`) thì mọi alert mức 3 đều hiện thanh đầy và tử số vượt mẫu số —
+`12.4/12`, và `12.4` với `14.0` vẽ giống nhau. Trần lý thuyết của `scorer.py`
+là `2.2*2.0 + 1.6*3 + 1.4*3 + 0.5*1.5 + 1.5 = 15.65`, nên `15.0` là mẫu số
+hợp lý. `outcome.BUCKETS` vẫn chia nhóm theo `12.0` — đó là `T_EXTREME`
+(ngưỡng mức 3), không phải mẫu số của thanh điểm.
+
 Chữ hiển thị nằm gọn trong dict `TXT` ở đầu `render.py` — sửa tên nhãn, tên
 mức, câu cảnh báo ở đó, không phải lần trong code. Thứ tự bỏ khối khi tin quá
-dài do các hằng `P_HALT ... P_WHY` quyết định (số càng cao càng được giữ lại).
+dài do các hằng `P_HALT ... P_WHY` quyết định (số càng cao càng được giữ lại) —
+bảng đầy đủ ở mục 6.
 
 ### Hai quy ước trong `render.py` — đừng "sửa" lại
 
@@ -1577,6 +1628,12 @@ Sáu điểm khác với thiết kế ban đầu:
   chứ không đoán trước.
 - **Bỏ bài gắn > 4 mã** (`MAX_SYMS`) và **tin xấu thắng tin mới**: hai chi tiết
   không có trong bản thiết kế nhưng thiếu chúng thì nhãn sai thường xuyên.
+- **Kết luận chuyển sang khối RỦI RO.** Bản đầu để nhãn + câu giải thích trong
+  CATALYST, nhưng `level` và `render_risk()` chỉ đọc `sec_risk`, nên một tin
+  chào bán ra trước 424B5 chỉ được cảnh báo bên trong CATALYST — mà CATALYST
+  bị bỏ **trước** RỦI RO khi tin dài. Giờ có `AlertView.dilution_risk` và
+  `render.RISK_GROUPS`; CATALYST chỉ còn tiêu đề tin. Chi tiết ở mục 8 →
+  "Cảnh báo từ tin nằm ở khối RỦI RO".
 
 **Tiêu chí xong** (≥70% alert có dòng catalyst hoặc nhãn "không rõ lý do") đạt
 được về mặt cấu trúc: hễ feed còn sống thì mọi alert đều có một trong ba thứ —
@@ -1600,7 +1657,7 @@ Không thêm tính năng, chỉ để những phase sau đỡ đau.
 - **4a. Gộp `notifier.py` vào `tgapi.py`.** `tgapi.py` giờ là đường gửi duy
   nhất; `notifier.py` chỉ còn `class Spool`. Cách hoạt động: **mục 7 → "Đường
   gửi Telegram"**.
-- **4b. Test.** `tests/` — 12 file, 248 test, chạy được cả bằng `pytest -q` và
+- **4b. Test.** `tests/` — 12 file, 262 test, chạy được cả bằng `pytest -q` và
   bằng `python tests/test_x.py` trên máy thiếu thư viện. Cách chạy: **mục 8 →
   "Test"**.
 - **4c. CI.** `.github/workflows/ci.yml` — hai job: `compile` (không cài gì) và

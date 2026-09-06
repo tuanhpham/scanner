@@ -28,7 +28,7 @@ def _v(**kw):
     """AlertView tu BASE, ghi de bang kw. kw danh cho from_scan di rieng."""
     fs = {k: kw.pop(k) for k in ("sec", "prev", "kind", "session", "updated",
                                  "mso", "session_min", "detail", "tracked",
-                                 "news_url", "halt") if k in kw}
+                                 "news_url", "halt", "news") if k in kw}
     return r.AlertView.from_scan({**BASE, **kw}, **fs)
 
 
@@ -264,6 +264,128 @@ def test_degrade_3_van_giu_noi_dung():
     plain = r.degrade(r.render_alert(_v(sec=SEC, halt=_halt())), 3)
     assert "WETO" in plain and "10.61" in plain
     assert r.TXT["hl_on"] in plain
+
+
+# ───────── 8. canh bao khong duoc bien mat ─────────
+def _news(group="DILUTION", risk=3.0, label="PHA LOÃNG — TIN VỪA RA",
+          note="Công ty bán thêm cổ phiếu.", **kw):
+    d = {"group": group, "label": label, "risk": risk, "note": note,
+         "headline": "Weto Announces Pricing of $15M Registered Direct Offering",
+         "source": "Benzinga", "url": "https://example.com/x", "age": 12, "n": 1}
+    return {**d, **kw}
+
+
+def test_tin_pha_loang_van_canh_bao_khi_sec_chua_thay_gi():
+    """Ban tin ra truoc 424B5 vai gio -> sec_risk = 0 luc do.
+
+    Neu khoi RUI RO chi doc sec_risk thi canh bao nam ky trong CATALYST,
+    dung khoi bi bo som nhat.
+    """
+    v = _v(sec={"risk": 0.0, "n": 3, "detail": []}, news=_news())
+    assert v.dilution_risk >= r.SEC_HIGH
+    assert r.TXT["r_dil_hi"] in r.render_alert(v)
+
+
+def test_tin_dai_bo_khoi_nao_thi_canh_bao_van_con():
+    """Truong hop that: explain + detail phinh to. Bo WHY/SEC la du."""
+    v = r.AlertView.from_scan({**BASE, "explain": "x " * 4000},
+                              sec={**SEC, "risk": 0.0, "detail": [
+                                  {"form": f"F{i}", "age": i, "n": 1,
+                                   "desc": "mô tả dài " * 30}
+                                  for i in range(40)]},
+                              detail=True, news=_news())
+    txt = r.render_alert(v)
+    assert len(txt) <= r.SAFE_LEN
+    assert r.TXT["r_dil_hi"] in txt
+
+
+def test_canh_bao_song_sot_khi_khoi_catalyst_bi_bo():
+    """P_NEWS < P_RISK: neu phai chon, giu ket luan chu khong giu tieu de tin.
+
+    Ha SAFE_LEN thay vi bom du lieu: voi SAFE_LEN that (3800) khong con cach
+    nao lam CATALYST bi bo ma RUI RO con lai — do la y muon. Test nay khoa
+    thu tu bo khoi, khong khoa mot con so do dai cu the.
+    """
+    v = _v(sec={"risk": 0.0, "n": 0, "detail": []}, news=_news())
+    real, r.SAFE_LEN = r.SAFE_LEN, 600
+    try:
+        txt = r.render_alert(v)
+    finally:
+        r.SAFE_LEN = real
+    assert r.TXT["h_news"] not in txt, "khoi CATALYST phai da bi bo"
+    assert r.TXT["r_dil_hi"] in txt, "mat CATALYST khong duoc mat canh bao"
+    assert r.P_RISK > r.P_NEWS > r.P_DATA
+
+
+def test_muc_do_doc_ca_tin_khong_chi_sec():
+    """Bom gia tren tin chao ban: muc 3 phai len du 424B5 chua ve EDGAR."""
+    kw = {"score": 9.0, "rvol": 60.0, "float_rot": 3.0}
+    assert _v(**kw, news=_news()).level == 3
+    assert _v(**kw).level == 2
+
+
+def test_pha_san_va_huy_niem_yet_co_muc_trong_rui_ro():
+    """news_risk 3.0 nhung truoc day khoi RUI RO khong he nhac den."""
+    for g, lab in (("BANKRUPT", "PHÁ SẢN / MẤT THANH KHOẢN"),
+                   ("DELIST", "NGUY CƠ HỦY NIÊM YẾT"),
+                   ("SPLIT", "GỘP CỔ PHIẾU (REVERSE SPLIT)")):
+        txt = r.render_alert(_v(news=_news(group=g, label=lab)))
+        assert lab in txt, g
+        assert txt.index(r.TXT["h_risk"]) < txt.index(lab), \
+            f"{g}: nhan phai nam trong khoi RUI RO"
+
+
+def test_pha_san_khong_bi_goi_la_pha_loang():
+    """news_risk = 3.0 cho ca BANKRUPT — nhung do khong phai pha loang."""
+    v = _v(sec={"risk": 0.0, "n": 1, "detail": []},
+           news=_news(group="BANKRUPT", label="PHÁ SẢN / MẤT THANH KHOẢN"))
+    assert v.dilution_risk == 0.0
+    assert r.TXT["r_dil_hi"] not in r.render_alert(v)
+
+
+def test_khong_noi_cung_mot_cau_hai_lan():
+    """Nhan + giai thich o RUI RO, tieu de tin o CATALYST. Khong trung."""
+    txt = r.render_alert(_v(news=_news()))
+    assert txt.count("Công ty bán thêm cổ phiếu.") <= 1
+    assert txt.count("PHA LOÃNG — TIN VỪA RA") == 0, \
+        "nhan nhom xau da co o khoi RUI RO"
+    assert "Registered Direct Offering" in txt, "tieu de tin phai con"
+
+
+def test_nhom_tin_tot_van_giu_nhan_o_catalyst():
+    """Nhom tot khong xuat hien o RUI RO -> CATALYST phai tu noi no la gi."""
+    txt = r.render_alert(_v(news=_news(group="BIO", risk=0.0, note="",
+                                       label="DỮ LIỆU / PHÊ DUYỆT")))
+    assert "DỮ LIỆU / PHÊ DUYỆT" in txt
+
+
+# ───────── 9. ba trang thai cua khoi SEC ─────────
+def test_ba_trang_thai_sec_noi_khac_nhau():
+    """Ma sach khong duoc bao la "thieu CIK" — xem edgar.scan()."""
+    def sec_line(status):
+        v = _v(sec={"risk": 0.0, "n": 0, "detail": [], "status": status})
+        return r.render_alert(v)
+    assert r.TXT["sec_empty"] in sec_line("ok")
+    assert r.TXT["sec_none"] in sec_line("no_cik")
+    assert r.TXT["sec_err"] in sec_line("error")
+    # sec=None va dict cu khong co "status" -> "khong biet", khong doan thieu CIK
+    for sec in (None, {"risk": 0.0, "n": 0}):
+        assert r.TXT["sec_none"] not in r.render_alert(_v(sec=sec))
+
+
+# ───────── 10. thanh diem ─────────
+def test_mau_so_thanh_diem_lon_hon_nguong_muc_3():
+    """SCORE_MAX == T_EXTREME thi moi alert muc 3 deu day thanh va "12.4/12"."""
+    assert r.SCORE_MAX > r.T_EXTREME
+    assert r._bar(r.T_EXTREME).count("░") >= 1, "muc 3 khong duoc day thanh ngay"
+    assert r._bar(14.0).count("█") > r._bar(12.4).count("█"), \
+        "12.4 va 14.0 phai ve khac nhau"
+    assert r._bar(r.SCORE_MAX + 5).count("█") == r.BAR_CELLS
+
+
+def test_tu_so_khong_vuot_mau_so():
+    txt = r.render_alert(_v(score=12.4))
+    assert f"12.4</b>/{r.SCORE_MAX:.0f}" in txt
 
 
 if __name__ == "__main__":

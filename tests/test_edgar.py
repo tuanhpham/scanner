@@ -22,13 +22,13 @@ def _f(form: str, age: int, items: str = "") -> dict:
             "url": "https://www.sec.gov/Archives/edgar/data/1/x/y.htm"}
 
 
-def _assess(fs: list[dict], sym: str = "AAA") -> dict:
-    """assess() nhung filings() da bi thay the — khong goi mang, khong doc DB."""
-    real, e.filings = e.filings, lambda s, days=e.SHELF_DAYS: list(fs)
+def _assess(fs: list[dict], sym: str = "AAA", status: str = "ok") -> dict:
+    """assess() nhung scan() da bi thay the — khong goi mang, khong doc DB."""
+    real, e.scan = e.scan, lambda s, days=e.SHELF_DAYS: (list(fs), status)
     try:
         return e.assess(sym)
     finally:
-        e.filings = real
+        e.scan = real
 
 
 # ───────────────────────── khong co ho so ─────────────────────────
@@ -37,6 +37,34 @@ def test_khong_co_ho_so():
     assert a["risk"] == 0.0 and a["n"] == 0 and a["flags"] == []
     assert a["earn"] is False and a["note"]
     assert a["sym"] == "AAA"
+
+
+def test_ba_ly_do_khong_co_ho_so_phai_khac_nhau():
+    """Ma sach, thieu CIK va EDGAR loi la BA chuyen khac nhau.
+
+    Gop lai thi render.py in "thieu CIK" cho mot ma khong phat hanh gi -
+    vu oan mot ma sach. Giong giao uoc None/n=0 cua news.NewsBook.view().
+    """
+    ghi = {st: _assess([], status=st)["note"]
+           for st in ("ok", "no_cik", "error")}
+    assert len(set(ghi.values())) == 3, ghi
+    assert "CIK" in ghi["no_cik"]
+    assert "120" in ghi["ok"], "ma sach: phai noi la khong co ho so nao"
+    for st in ("ok", "no_cik", "error"):
+        assert _assess([], status=st)["status"] == st
+
+
+def test_co_ho_so_cung_giu_status():
+    assert _assess([_f("424B5", 2)])["status"] == "ok"
+
+
+def test_filings_van_tra_ve_danh_sach():
+    """filings() la API cu, con nhieu cho dung: no bo trang thai di."""
+    real, e.scan = e.scan, lambda s, days=e.SHELF_DAYS: ([{"form": "8-K"}], "ok")
+    try:
+        assert e.filings("AAA") == [{"form": "8-K"}]
+    finally:
+        e.scan = real
 
 
 # ───────────────────────── pha loang: moi vs cu ─────────────────────────
