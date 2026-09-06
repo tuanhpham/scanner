@@ -1,9 +1,76 @@
-Bốn điểm mình thấy đáng xem lại
-Khối SEC nói sai khi không có dữ liệu. Bạn xử lý rất cẩn thận chuyện này cho news — None là "không biết gì", n=0 là "biết chắc không có tin" — nhưng SEC thì không. has_sec trả False cho cả ba trường hợp khác nhau: thiếu CIK, có CIK nhưng không filing nào trong 120 ngày, và tra EDGAR bị lỗi. Cả ba đều in ra "Không tra được hồ sơ (thiếu CIK)". Trường hợp giữa là sai rõ ràng — mã sạch, không phát hành gì, lại bị nói là thiếu dữ liệu. Đúng cái bẫy docstring view() của bạn cảnh báo.
+Repo: ~/scanner (venv ở .venv, service systemd tên scanner) File cần sửa: render.py, thêm mới tests/test_render.py
 
-Cảnh báo pha loãng từ tin có thể biến mất. level và render_risk chỉ đọc sec_risk, không đọc news_risk. Mà classify trả risk 3.0 cho DILUTION — bằng SEC_HIGH. Nghĩa là một mã có headline "Pricing of Offering" nhưng 424B5 chưa lên EDGAR sẽ chỉ được cảnh báo bên trong khối CATALYST. Và P_NEWS = 4 thấp hơn P_RISK = 5, nên khi tin nhắn dài quá SAFE_LEN, CATALYST bị bỏ trước RỦI RO — cảnh báo pha loãng mất sạch trong khi các con số đẹp vẫn còn nguyên. Đây là chỗ mình lo nhất trong cả file.
+Bối cảnh: Đã rà soát render.py sau đợt refactor. Bốn vấn đề được nêu, hai cái đã tự sửa xong, hai cái còn nợ. Chỉ làm hai việc dưới đây, không đổi gì khác.
 
-P_FOOT = 8 cao hơn P_DATA = 7. Khi phải cắt, panel số liệu bị bỏ trước dòng miễn trừ trách nhiệm. Có thể là cố ý vì lý do pháp lý, nhưng kết quả là một alert không còn số nào mà vẫn có câu "Dữ liệu thô, chưa kiểm chứng".
+Việc 1 — Đảo thang ưu tiên khi cắt tin nhắn (bug thật).
 
-12.4/12 với thanh đầy. Vì T_EXTREME bằng đúng SCORE_MAX, mọi alert L3 đều hiện thanh full và tử số vượt mẫu số. Chỉ là thẩm mỹ, nhưng tách hai hằng số ra (ví dụ SCORE_MAX = 15) sẽ khiến thanh bar còn phân biệt được giữa 12.4 và 14.
+Trong render_alert, vòng cắt là i = min(range(len(blocks)), key=lambda j: (blocks[j][0], -j)) → khối có P nhỏ nhất bị bỏ trước. Thang hiện tại là P_DATA=4, P_FOOT=8, nên panel số (RVOL/ATR/dollar-vol) là khối thứ ba bị bỏ trong khi dòng disclaimer sống gần cuối. Tin nhắn còn header + risk + disclaimer mà không có số liệu thì vô dụng. Sửa thành:
+
+CopyP_HALT  = 10
+P_HEAD  = 9
+P_DATA  = 8
+P_RISK  = 7
+P_NEWS  = 6
+P_SEC   = 5
+P_WHY   = 4
+P_BADGE = 3
+P_FOOT  = 2
+Ràng buộc bắt buộc: P_DATA > P_FOOT. Nếu muốn giữ disclaimer là dòng bắt buộc thì đặt P_FOOT=8, P_DATA=9, miễn giữ được bất đẳng thức đó.
+
+Việc 2 — Tin pha loãng phải vào được khối RISK trước khi EDGAR kịp cập nhật.
+
+Hiện RISK_GROUPS = {"BANKRUPT":3, "DELIST":3, "SPLIT":2}, cố tình bỏ DILUTION để tránh nói hai lần với mục pha loãng suy từ SEC. Nhưng thông cáo kiểu "Announces Pricing of $15M Registered Direct Offering" ra trước khi 424B5/8-K lên full-text index vài chục phút đến vài giờ — đúng lúc bot bắn alert. Trong khoảng đó cảnh báo chỉ nằm ở khối CATALYST (P_NEWS), là khối bỏ được. Sửa hai chỗ:
+
+CopyRISK_GROUPS = {"BANKRUPT": 3, "DELIST": 3, "SPLIT": 2, "DILUTION": 3}
+và trong render_risk, chặn trùng ngay tại chỗ thêm mục:
+
+Copyif (sev := RISK_GROUPS.get(v.news_group or "")):
+    n = v.news or {}
+    dup = v.news_group == "DILUTION" and v.dilution_risk >= SEC_MID
+    if n.get("label") and not dup:
+        items.append((sev, n["label"], n.get("note") or ""))
+Kết quả mong muốn: EDGAR đã xác nhận thì SEC nói, chưa xác nhận thì tin nói, không bao giờ cả hai cùng chiếm slot của max_items.
+
+Việc 3 — Tạo tests/test_render.py để khóa lại, tránh tái phát.
+
+Copyimport render
+
+def mk(**kw):
+    d = dict(sym='T', px=10.61, chg=85.5, score=12.4, rvol=66.2, atr_move=4.1,
+             dollar_vol=311e6, float_sh=8.4e6, float_rot=3.49,
+             cik='0001941158', detail=True, explain='RVOL 66.2x')
+    d.update(kw)
+    return render.AlertView(**d)
+
+def test_data_survives_footer():
+    assert render.P_DATA > render.P_FOOT
+
+def test_cut_keeps_numbers(monkeypatch):
+    monkeypatch.setattr(render, 'SAFE_LEN', 420)
+    assert 'FLOW' in render.render_alert(mk())
+
+def test_bar_not_saturated():
+    assert render.T_EXTREME < render.SCORE_MAX
+    assert render.render_header(mk(score=9.0)) != render.render_header(mk(score=14.8))
+
+def test_sec_status_domain():
+    for st in ('ok', 'no_cik', 'error', 'unknown'):
+        assert st in render.SEC_EMPTY
+
+def test_dilution_reaches_risk():
+    v = mk(news={'label': 'PHA LOANG', 'note': 'x', 'group': 'DILUTION',
+                 'risk': 3, 'age': 5, 'title': 'Pricing of Offering'})
+    assert render.TXT['h_risk'] in render.render_alert(v)
+Dùng monkeypatch để SAFE_LEN tự khôi phục, không rò rỉ sang test khác. Lưu ý cách test tràn: hạ SAFE_LEN, đừng bơm chuỗi dài vào explain hay news['note'] — cả hai đã bị truncate sẵn nên vòng while không chạy nhịp nào và test sẽ pass rỗng.
+
+KHÔNG sửa những chỗ này, đã đúng rồi: SCORE_MAX=15.0 tách khỏi T_EXTREME=12.0 (thanh điểm đã hết saturation, xác nhận bằng 5/10 → 7/10 → 8/10 → 10/10); SEC_EMPTY phủ đủ bốn trạng thái và sec_status là property nội bộ nên miền giá trị đóng, không có nguy cơ rơi vào default sec_err; cơ chế truncate trong render_news; _link(); _hard_cut().
+
+Nghiệm thu:
+
+Copycd ~/scanner && source .venv/bin/activate
+python -m pytest -q                 # ky vong 5 passed + cac test cu
+python -c "import main, render, scorer, callbacks"
+sudo systemctl restart scanner && sleep 3 && tail -20 state/service.log
+Chạy pytest trước khi sửa để thấy test_data_survives_footer và test_cut_keeps_numbers đỏ, sau khi sửa phải xanh. Đó là bằng chứng test đo đúng chỗ chứ không pass rỗng.
+
 
