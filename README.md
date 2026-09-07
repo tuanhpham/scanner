@@ -840,24 +840,28 @@ Dữ liệu thô, chưa kiểm chứng · Không phải lời khuyên đầu tư
   canh phải 8 ký tự, delta cột riêng (`W_IND`, `W_LAB`, `W_VAL`, `W_DLT`).
 - **Không có dòng link chữ ở cuối** — inline keyboard đã có sẵn các nút đó.
 - **Tin quá 3800 ký tự** → bỏ **cả khối** theo thứ tự ưu tiên
-  (WHY → SEC → SỐ LIỆU → CATALYST → RISK → BADGE → FOOT → HEADER → HALT),
-  không bao giờ cắt giữa tag HTML. Thang ưu tiên là **giá trị / độ dài**, không
-  phải "khối nào quan trọng hơn":
+  (FOOT → BADGE → WHY → SEC → CATALYST → RISK → SỐ LIỆU → HEADER → HALT),
+  không bao giờ cắt giữa tag HTML:
 
   | Khối | P | Vì sao ở đó |
   |---|---|---|
   | HALT | 10 | Đang bị dừng giao dịch thì mọi số liệu còn lại là thứ yếu |
   | HEADER | 9 | Mã, giá, %, điểm, mức độ — bỏ là không còn gì để đọc |
-  | FOOT | 8 | Dài **một dòng** (~90 ký tự): bỏ nó gần như không tiết kiệm gì |
-  | BADGE | 7 | Một dòng |
-  | RISK | 6 | Nơi **duy nhất** kết luận về pha loãng / phá sản / hủy niêm yết |
-  | CATALYST | 5 | Mất nó là mất tiêu đề tin, nhưng cảnh báo vẫn còn ở RISK |
-  | SỐ LIỆU | 4 | `<pre>` 8–12 dòng, và là khối lặp lại nhiều nhất |
-  | SEC, WHY | 3, 2 | Cả hai là `blockquote expandable` — phải bấm mới mở |
+  | SỐ LIỆU | 8 | Lý do alert tồn tại: RVOL / ATR / $ volume / float |
+  | RISK | 7 | Nơi **duy nhất** kết luận về pha loãng / phá sản / hủy niêm yết |
+  | CATALYST | 6 | Mất nó là mất tiêu đề tin, nhưng cảnh báo vẫn còn ở RISK |
+  | SEC, WHY | 5, 4 | Cả hai là `blockquote expandable` — phải bấm mới mở |
+  | BADGE | 3 | Chỉ nhắc lại một con số đã có trong panel |
+  | FOOT | 2 | Câu miễn trừ cố định |
 
-  `P_FOOT` trên `P_DATA` nhìn có vẻ ngược (bỏ số liệu mà giữ dòng miễn trừ),
-  nhưng bỏ FOOT chỉ tiết kiệm 90 ký tự trong khi HEADER vẫn còn giá, %, điểm,
-  thanh điểm và mức độ — không có chuyện "alert không còn số nào".
+  **Ràng buộc bắt buộc: `P_DATA > P_FOOT`.** Bản trước ngược lại (`DATA = 4`,
+  `FOOT = 8`) vì thang đo tính theo *giá trị / độ dài*: bỏ FOOT chỉ tiết kiệm
+  ~90 ký tự nên nó "rẻ" để giữ. Nhưng hệ quả thực tế là panel số là khối **thứ
+  ba** bị bỏ, còn dòng miễn trừ sống gần cuối — một alert còn header + RISK +
+  miễn trừ mà không có RVOL/ATR/$ volume thì không dùng để quyết định gì được.
+  Dòng miễn trừ là nghĩa vụ pháp lý, không phải nội dung. Nếu muốn giữ nó là
+  dòng bắt buộc thì đặt `P_FOOT = 8, P_DATA = 9` — miễn giữ được bất đẳng thức.
+  `tests/test_render.py::test_data_song_lau_hon_footer` khoá điều này lại.
 
 ### Các nút bấm
 
@@ -1337,15 +1341,20 @@ cảnh báo nhất nên nói rõ:
   Offering"* tự nó đủ để lên mức 3 và tự nó đủ để in "PHA LOÃNG — CAO", kể cả
   khi 424B5 chưa về tới EDGAR (`sec_risk = 0`).
 - Chỉ nhóm `DILUTION` được cộng vào đó. `news_risk` cũng là `3.0` cho
-  `BANKRUPT` và `DELIST`, mà gọi phá sản là "pha loãng" thì sai hẳn — ba nhóm
-  `BANKRUPT` / `DELIST` / `SPLIT` có mục riêng trong RỦI RO, lấy nguyên
-  `label` + `note` từ `news.py` (`render.RISK_GROUPS`).
+  `BANKRUPT` và `DELIST`, mà gọi phá sản là "pha loãng" thì sai hẳn — mỗi nhóm
+  trong `render.RISK_GROUPS` có mục riêng trong RỦI RO, lấy nguyên
+  `label` + `note` từ `news.py`.
+- `RISK_GROUPS` có cả `DILUTION`, nhưng `render_risk()` chặn trùng ngay tại chỗ
+  thêm mục: `dup = news_group == "DILUTION" and dilution_risk >= SEC_MID`.
+  Nghĩa là **không bao giờ** có hai mục pha loãng cùng chiếm slot của
+  `max_items`. Vì `dilution_risk` đã gộp `news_risk` sẵn, nhánh này chỉ mở khi
+  bản tin có `risk` dưới `SEC_MID` — `news.py` hiện luôn gán `3.0` cho nhóm
+  `DILUTION`, nên đó là lớp chặn phòng xa, không phải đường chạy thường ngày.
 - Vì vậy CATALYST **không in lại** nhãn của nhóm xấu: RỦI RO là khối *kết
   luận*, CATALYST là khối *bằng chứng* (tiêu đề tin + nguồn · tuổi). Nhóm tốt
   không xuất hiện ở RỦI RO nên vẫn giữ nhãn ở CATALYST.
-- Ưu tiên cắt: `P_RISK = 6 > P_NEWS = 5 > P_DATA = 4`. Tin dài thì mất tiêu đề
-  tin trước, mất số liệu trước, nhưng kết luận pha loãng là thứ gần cuối cùng
-  bị bỏ.
+- Ưu tiên cắt: `P_RISK = 7 > P_NEWS = 6`. Tin dài thì mất tiêu đề tin trước,
+  nhưng kết luận pha loãng vẫn còn.
 
 **Hồ sơ SEC cũng có giao ước ba trạng thái** (`edgar.scan()` trả
 `(danh_sách, status)`), vì trước đây cả ba lý do "không có hồ sơ" đều in
@@ -1467,7 +1476,8 @@ SCORE_MAX, BAR_CELLS = 15.0, 10        # thang của thanh điểm
 W_IND, W_LAB, W_VAL, W_DLT = 2, 11, 8, 6   # 4 cột trong panel <pre>
 SAFE_LEN = 3800           # vượt ngưỡng này thì bỏ bớt khối
 NEWS_HEAD_MAX = 170       # cắt tiêu đề tin dài hơn thế
-RISK_GROUPS = {"BANKRUPT": 3, "DELIST": 3, "SPLIT": 2}   # nhóm tin → mục RỦI RO
+RISK_GROUPS = {"BANKRUPT": 3, "DELIST": 3, "SPLIT": 2,   # nhóm tin → mục RỦI RO
+               "DILUTION": 3}                           # chặn trùng bằng `dup`
 EXPANDABLE = True         # <blockquote expandable>, cần Bot API >= 7.3
 ASK_MAX = 700             # độ dài prompt của nút Hỏi ChatGPT
 ```
@@ -1657,7 +1667,7 @@ Không thêm tính năng, chỉ để những phase sau đỡ đau.
 - **4a. Gộp `notifier.py` vào `tgapi.py`.** `tgapi.py` giờ là đường gửi duy
   nhất; `notifier.py` chỉ còn `class Spool`. Cách hoạt động: **mục 7 → "Đường
   gửi Telegram"**.
-- **4b. Test.** `tests/` — 12 file, 262 test, chạy được cả bằng `pytest -q` và
+- **4b. Test.** `tests/` — 12 file, 267 test, chạy được cả bằng `pytest -q` và
   bằng `python tests/test_x.py` trên máy thiếu thư viện. Cách chạy: **mục 8 →
   "Test"**.
 - **4c. CI.** `.github/workflows/ci.yml` — hai job: `compile` (không cài gì) và

@@ -80,30 +80,41 @@ W_IND, W_LAB, W_VAL, W_DLT = 2, 11, 8, 6
 
 # Uu tien giu lai khi tin nhan vuot SAFE_LEN — khoi diem thap bi bo truoc.
 #
-# Thang do khong phai "cai nao quan trong hon" ma la GIA TRI / DO DAI: cat de
-# lay lai do dai, nen khoi to va it thong tin moi phai di truoc.
+# RANG BUOC BAT BUOC: P_DATA > P_FOOT. Truoc day nguoc lai (DATA 4, FOOT 8) vi
+# thang do tinh theo GIA TRI / DO DAI: FOOT dai mot dong nen bo no khong cuu
+# duoc bao nhieu. Nhung ket qua thuc te la panel so la khoi THU BA bi bo, con
+# dong "khong phai loi khuyen dau tu" song gan cuoi — mot alert con header +
+# RUI RO + mien tru ma khong co RVOL/ATR/$ volume thi khong dung duoc de quyet
+# dinh gi. Dong mien tru la nghia vu phap ly, khong phai noi dung; noi dung di
+# truoc.
 #
 #   P_HALT   cao hon ca header — dang bi tam dung thi moi so lieu la thu yeu.
-#   P_FOOT   tren DATA: FOOT dai MOT dong (~90 ky tu) nen bo no gan nhu khong
-#            cuu duoc gi, ma mat han cau "khong phai loi khuyen dau tu".
-#   P_RISK   tren DATA: khoi RUI RO la noi DUY NHAT ket luan ve pha loang /
-#            pha san / huy niem yet. Truoc day RISK (5) < DATA (7), nghia la
-#            mot tin nhan dai se giu panel so lieu dep va bo canh bao.
-#   P_NEWS   tren DATA, duoi RISK: mat CATALYST la mat tieu de tin, con canh
-#            bao thi RUI RO da giu (render_risk doc dilution_risk = max cua
-#            sec_risk va news_risk nhom DILUTION).
-#   P_DATA   la khoi <pre> 8-12 dong va la khoi lap lai nhieu nhat: gia/%/diem
-#            da o header, rvol/atr/quay vong lap lai trong khoi VI SAO.
-#   P_SEC, P_WHY  di dau tien: ca hai la blockquote expandable, nguoi doc phai
-#            bam moi thay, va deu tra loi duoc bang nut Finviz / Ho so SEC.
-P_HALT, P_HEAD, P_FOOT, P_BADGE, P_RISK, P_NEWS, P_DATA, P_SEC, P_WHY = \
-    10, 9, 8, 7, 6, 5, 4, 3, 2
+#   P_HEAD   ma, gia, %, diem, muc do. Bo la khong con gi de doc.
+#   P_DATA   ly do ton tai cua alert: RVOL / ATR / $ volume / float.
+#   P_RISK   noi DUY NHAT ket luan ve pha loang / pha san / huy niem yet.
+#   P_NEWS   duoi RISK: mat CATALYST la mat tieu de tin, con canh bao thi
+#            RUI RO da giu (dilution_risk = max cua sec_risk va news_risk).
+#   P_SEC, P_WHY  blockquote expandable, phai bam moi thay, va deu tra loi
+#            duoc bang nut Finviz / Ho so SEC.
+#   P_BADGE, P_FOOT  di dau tien: BADGE chi nhac lai mot con so da co trong
+#            panel, FOOT la cau mien tru co dinh.
+P_HALT  = 10
+P_HEAD  = 9
+P_DATA  = 8
+P_RISK  = 7
+P_NEWS  = 6
+P_SEC   = 5
+P_WHY   = 4
+P_BADGE = 3
+P_FOOT  = 2
 
 NEWS_HEAD_MAX = 170     # tieu de dai hon the nay bi cat — Benzinga co ban 200+
 
 # Nhom tin (news.py GROUPS) sinh mot muc trong khoi RUI RO, kem do nghiem trong.
-# DILUTION khong o day: no gop voi sec_risk qua AlertView.dilution_risk.
-RISK_GROUPS = {"BANKRUPT": 3, "DELIST": 3, "SPLIT": 2}
+# DILUTION co o day: ban tin "Announces Pricing of Offering" ra truoc khi
+# 424B5/8-K len full-text index vai chuc phut den vai gio — dung luc bot ban
+# alert. render_risk() chan trung ngay tai cho them muc, xem `dup` o duoi.
+RISK_GROUPS = {"BANKRUPT": 3, "DELIST": 3, "SPLIT": 2, "DILUTION": 3}
 
 TXT = {
     # xep loai muc do — den mau la emoji DUY NHAT o header
@@ -442,11 +453,13 @@ def _link(url: str, label: str) -> str:
 
 
 def _risk_says(v: AlertView) -> bool:
-    """Khoi RUI RO co noi ve nhom tin nay chua? (de khong noi hai lan)"""
-    g = v.news_group
-    if g in RISK_GROUPS:
-        return True
-    return g == "DILUTION" and v.dilution_risk >= SEC_MID
+    """Khoi RUI RO co noi ve nhom tin nay chua? (de khong noi hai lan)
+
+    Chi can kiem tra RISK_GROUPS: moi nhom trong do deu sinh mot muc o RUI RO —
+    nhom DILUTION thi hoac la muc suy tu dilution_risk, hoac la nhan cua ban
+    tin khi EDGAR chua xac nhan (xem `dup` trong render_risk).
+    """
+    return v.news_group in RISK_GROUPS
 
 
 def render_news(v: AlertView) -> list[str]:
@@ -498,7 +511,10 @@ def render_risk(v: AlertView, max_items: int = 3) -> list[str]:
     # news.py, khong chep lai chuoi sang day de hai bang khong lech nhau.
     if (sev := RISK_GROUPS.get(v.news_group or "")):
         n = v.news or {}
-        if n.get("label"):
+        # EDGAR da xac nhan thi muc o tren noi, chua thi tin noi — khong bao
+        # gio ca hai cung chiem slot cua max_items.
+        dup = v.news_group == "DILUTION" and v.dilution_risk >= SEC_MID
+        if n.get("label") and not dup:
             items.append((sev, n["label"], n.get("note") or ""))
     if (v.atr_move or 0) >= HOT_ATR:
         items.append((2, TXT["r_vol"], TXT["r_vol_n"].format(a=v.atr_move)))

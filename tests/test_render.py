@@ -307,14 +307,14 @@ def test_canh_bao_song_sot_khi_khoi_catalyst_bi_bo():
     thu tu bo khoi, khong khoa mot con so do dai cu the.
     """
     v = _v(sec={"risk": 0.0, "n": 0, "detail": []}, news=_news())
-    real, r.SAFE_LEN = r.SAFE_LEN, 600
+    real, r.SAFE_LEN = r.SAFE_LEN, 700   # cua so: NEWS da bi bo, RISK con
     try:
         txt = r.render_alert(v)
     finally:
         r.SAFE_LEN = real
     assert r.TXT["h_news"] not in txt, "khoi CATALYST phai da bi bo"
     assert r.TXT["r_dil_hi"] in txt, "mat CATALYST khong duoc mat canh bao"
-    assert r.P_RISK > r.P_NEWS > r.P_DATA
+    assert r.P_RISK > r.P_NEWS
 
 
 def test_muc_do_doc_ca_tin_khong_chi_sec():
@@ -386,6 +386,41 @@ def test_mau_so_thanh_diem_lon_hon_nguong_muc_3():
 def test_tu_so_khong_vuot_mau_so():
     txt = r.render_alert(_v(score=12.4))
     assert f"12.4</b>/{r.SCORE_MAX:.0f}" in txt
+
+
+# ───────── 11. khoa lai thang uu tien & duong pha loang ─────────
+def test_data_song_lau_hon_footer():
+    """Header + RUI RO + dong mien tru ma KHONG co so lieu thi tin vo dung."""
+    assert r.P_DATA > r.P_FOOT
+
+
+def test_cat_tin_van_giu_so_lieu():
+    """Ha SAFE_LEN, KHONG bom chuoi dai vao explain hay news['note'].
+
+    Ca hai cho do da bi cat san (ASK_MAX / NEWS_HEAD_MAX), bom vao thi vong
+    while trong render_alert khong chay nhip nao va test pass rong.
+    """
+    real, r.SAFE_LEN = r.SAFE_LEN, 420
+    try:
+        txt = r.render_alert(_v())
+    finally:
+        r.SAFE_LEN = real
+    assert "FLOW" in txt, "cat het khoi so lieu roi"
+
+
+def test_thanh_diem_khong_bao_hoa():
+    assert r.T_EXTREME < r.SCORE_MAX
+    assert r.render_header(_v(score=9.0)) != r.render_header(_v(score=14.8))
+
+
+def test_mien_gia_tri_sec_status():
+    """sec_status la property noi bo nen mien gia tri dong — phu du bon."""
+    for st in ("ok", "no_cik", "error", "unknown"):
+        assert st in r.SEC_EMPTY
+
+
+def test_tin_pha_loang_vao_duoc_khoi_rui_ro():
+    assert r.TXT["h_risk"] in r.render_alert(_v(news=_news()))
 
 
 if __name__ == "__main__":
