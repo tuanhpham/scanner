@@ -651,10 +651,13 @@ python -c "import main, render, scorer, callbacks"   # bắt lỗi syntax/import
 sudo systemctl restart scanner
 tail -20 state/service.log
 ```
+```bash
+ cd ~/scanner && git pull && source .venv/bin/activate && pip install -r requirements.txt && python -m pytest -q && sudo systemctl daemon-reload && sudo systemctl restart scanner.
 
 Dòng `python -c "import ..."` đáng làm: import lỗi thì systemd sẽ
 crash-loop mỗi 30 giây và bạn phải mò trong `journalctl`, trong khi chạy
 import tay nó in traceback ra ngay.
+```
 
 Sửa `render.py` thì thêm `python render.py` trước khi restart — nó in 3 alert
 mẫu và tự kiểm tra panel `<pre>` còn thuần ASCII hay không (xem mục 9).
