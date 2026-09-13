@@ -34,6 +34,10 @@ jobs:
         run: |
           python halts.py          # selftest parser feed halt
           python news.py           # bang tu khoa catalyst + so tay cuon 4 gio
+          python bars.py           # kho nen ngay: upsert, limit, upto, dieu chinh split
+          python structure.py      # do nen tich luy + do sau cu roi tren chuoi tong hop
+          python setups.py         # nguong BO/RV + kich hoat trong phien
+          python backtest.py       # chay lai setup tren chuoi nen tong hop
           python render.py > /dev/null
           python outcome.py        # khong doi so = _smoke()
           python events.py         # khong doi so = _smoke()

@@ -25,6 +25,13 @@ Với mỗi mã trong ~5000 mã Mỹ, tính và lưu vào SQLite:
 **Phần 2 — Hôm nay lệch bao xa?** (`main.py`, chạy liên tục trong phiên)
 So số liệu live với baseline → chấm điểm → vượt ngưỡng thì gửi Telegram.
 
+**Đang mở rộng (Phase 9).** Cách trên chỉ thấy được cú nhảy đột ngột. Một mã
+vừa breakout khỏi nền tích luỹ 8 tuần thì +2~3% — nó không lọt vào screener,
+nên dù có nới ngưỡng bao nhiêu bot cũng **không thể** thấy. `bars.py` +
+`structure.py` (đã cài) là hai tầng đầu để sửa: giữ lại nến ngày và đo nền tích
+luỹ, để danh sách theo dõi sinh ra từ tối hôm trước thay vì từ bảng top-mover.
+Chi tiết ở mục 11, Phase 9.
+
 ---
 
 ## 2. Luồng dữ liệu
@@ -601,6 +608,18 @@ cũng vô hại.
 Nếu bạn muốn quét cả premarket sớm, đẩy `prep.py` lên `0 6` — nhưng nhớ là
 nến ngày hôm trước của Yahoo phải đã chốt.
 
+Khi dùng Phase 9, dòng 08:00 đổi thành chuỗi ba bước — kho nến trước, rồi
+baseline và bảng `struct` đọc lại từ kho đó (`&&` để một bước lỗi thì các bước
+sau không chạy trên dữ liệu cũ):
+
+```cron
+0 8 * * 1-5  cd /home/ubuntu/scanner && .venv/bin/python bars.py --sync >> state/prep.log 2>&1 && .venv/bin/python prep.py --from-bars >> state/prep.log 2>&1 && .venv/bin/python structure.py --build >> state/prep.log 2>&1 && .venv/bin/python setups.py --build >> state/prep.log 2>&1
+```
+
+Cách này bỏ được **một lượt tải yfinance**: hiện tại `prep.py` tải 4 tháng nến
+cho ~5000 mã rồi ném đi, chỉ giữ 3 con số. Nhưng chỉ đổi sau khi đã đối chiếu
+`adv20`/`prev_close` giữa hai cách trên bản sao DB — xem cảnh báo ở mục 9.1.
+
 Kiểm tra cron có chạy thật:
 
 ```bash
@@ -1014,6 +1033,10 @@ riêng của project này, ChatGPT không có cách nào hiểu `12.4/12` nghĩa
 |---|---|
 | `main.py` | Vòng lặp chính, 8 task async, ngưỡng alert, ghi bảng `alerts` |
 | `prep.py` | Dựng baseline hàng ngày: adv20, atr14, prev_close, cik |
+| `bars.py` | Kho nến ngày (~3 năm) trong SQLite. Lưu cả giá thô và giá đã điều chỉnh |
+| `structure.py` | Đo cấu trúc giá từ nến ngày: nền tích luỹ, pivot, độ sâu cú rơi. Chỉ **đo**, không phán xét |
+| `setups.py` | Hai setup BO/RV: ngưỡng nền (buổi tối) + điều kiện kích hoạt (trong phiên) |
+| `backtest.py` | Chạy lại BO/RV trên nến ngày quá khứ. Gọi đúng hàm của bot, có mốc so sánh "vào mù" |
 | `clock.py` | Lịch phiên NYSE → giờ Đức. Xử lý DST lệch, nửa phiên, ngày lễ |
 | `universe_live.py` | Gộp Alpaca + Yahoo screener → dict các mã đang chạy |
 | `scorer.py` | Lọc + chấm điểm. Cũng lấy `float_sh` lười (top 60 mã) |
@@ -1070,6 +1093,9 @@ không nút vẫn hơn không có alert.
 |---|---|---|
 | `base` | `prep.py` | 1 dòng/mã: adv20, atr14, prev_close, float_sh, cik, is_etf |
 | `meta` | `prep.py` | Cặp key-value: `built`, `count`, `etf_marked` |
+| `bars` | `bars.py` | Nến ngày, khoá `(sym, d)`: o/h/l/c + `ac` (adj close) + v. Giữ ~800 phiên |
+| `struct` | `structure.py` | 1 dòng/mã, **dựng lại toàn bộ mỗi tối**: nền tích luỹ, pivot, off_high, rs_pct |
+| `candidates` | `setups.py` | Danh sách theo dõi cho phiên tới, khoá `(sym, setup)`. Cũng dựng lại toàn bộ |
 | `alerts` | `main.py` | Lịch sử alert đã gửi. Dùng cho `restore_today()` |
 | `alert_msg` | `store.py` | `sym`+`day` → `message_id` + snapshot (để tính delta) |
 | `watch` | `store.py` | Mã đang theo dõi trong phiên (`kind='track'`) |
@@ -1106,6 +1132,32 @@ python scripts/check_tg.py       # .env đúng chưa, bot gửi được vào nh
 python scripts/preview_alert.py  # gửi 1 alert mẫu lên Telegram
 ```
 
+Kho nến ngày và tầng đo cấu trúc (Phase 9):
+
+```bash
+python bars.py                   # selftest: upsert, limit, upto, điều chỉnh split
+python bars.py --info            # kho có bao nhiêu mã / nến, ngày mới nhất
+python bars.py --info NVDA       # 10 nến cuối của một mã
+python bars.py --sync --full     # lần đầu: tải 2 năm cho cả universe (dùng tmux)
+python bars.py --sync            # hằng ngày: chỉ 1 tháng gần nhất
+python bars.py --purge           # xoá nến cũ hơn 800 phiên
+python structure.py              # selftest trên chuỗi giá tổng hợp — không cần mạng
+python structure.py --build      # dựng bảng struct + in list "sắp vượt pivot"
+python structure.py --show NVDA  # toàn bộ số đo của một mã
+python setups.py                 # selftest ngưỡng BO/RV — không cần mạng
+python setups.py --build         # struct -> candidates + bảng LÝ DO BỊ LOẠI
+python setups.py --show BO       # danh sách BO đang theo dõi, kèm pivot
+python backtest.py               # selftest trên chuỗi nến tổng hợp
+python backtest.py --run --limit 300      # chạy lại quá khứ, 300 mã đầu
+python backtest.py --run --by base_len    # nền dài bao nhiêu thì mới trả tiền
+python prep.py --from-bars       # dựng base từ kho nến, không gọi mạng lần nào
+```
+
+`python setups.py --build` in bảng lý do bị loại giống `scorer.py`. Nếu
+`khong co nen tich luy` chiếm gần hết thì bình thường — phần lớn thị trường
+không ở nền. Nếu `con xa pivot` chiếm gần hết thì thị trường vừa rơi mạnh, và
+BO đúng ra nên im lặng.
+
 ### Test
 
 ```bash
@@ -1119,7 +1171,16 @@ quét `scripts/`. Đừng bỏ dòng đó — xem mục "Lỗi thường gặp".
 Cùng một file test chạy được ở cả hai chỗ (`tests/_util.py`). Trên máy dev thiếu
 thư viện, `need()` **bỏ qua cả file và thoát 0** thay vì báo lỗi — nhờ vậy bạn
 vẫn kiểm tra được `render.py`, `halts.py`, `news.py`, `outcome.py`,
-`events.py`, `notifier.py` trước khi push, và CI chạy phần còn lại.
+`events.py`, `notifier.py`, `bars.py`, `structure.py`, `setups.py`,
+`backtest.py` trước khi push, và CI chạy phần còn lại.
+
+`tests/test_bars.py`, `test_structure.py`, `test_setups.py` và
+`test_backtest.py` chạy **đầy đủ** trên máy dev vì bốn module đó chỉ dùng
+`sqlite3` — kể cả phần đọc
+DataFrame của yfinance,
+được test bằng một DataFrame giả (`_DF`/`_Ser`) chỉ hỗ trợ đúng những phép
+`bars._rows_of()` thật sự gọi. Đây là chỗ duy nhất trong repo mà một
+lỗi *logic* (không phải cú pháp) bị bắt trước khi push.
 
 CI có hai job vì hai mục đích khác nhau: `compile` **không cài gì** (bắt lỗi cú
 pháp — bạn deploy bằng `git pull`, một lỗi syntax là service crash-loop suốt
@@ -1563,6 +1624,10 @@ Nguyên tắc xuyên suốt: **bot này là công cụ phát hiện, không ph�
 dịch.** Mọi thứ dưới đây đều nhằm làm alert *đáng tin hơn* hoặc *ít rác hơn*,
 không nhằm tự động đặt lệnh.
 
+Phase 1–8 làm engine spike sạch hơn. **Phase 9 thì khác loại**: nó thêm hai
+setup mới (nền tích luỹ và bật đáy) — tức là đổi *việc bot đi tìm cái gì*, chứ
+không chỉnh cái đang có. Nếu bạn chỉ đọc một phase, đọc Phase 9.
+
 ---
 
 ### PHASE 1 — Đo chất lượng alert ✅ ĐÃ XONG
@@ -1836,6 +1901,325 @@ nhiệm mà một dự án cá nhân không cần.
 
 ---
 
+### PHASE 9 — Hai setup mới: nền tích luỹ và bật đáy
+
+Đây là phase **đổi hướng**, không phải chỉnh tinh. Ba phase trước làm alert
+sạch hơn; phase này thay đổi *bot đi tìm cái gì*.
+
+#### 9.a Vì sao engine hiện tại không thể thấy nền tích luỹ
+
+Một mã vừa breakout khỏi nền 8 tuần thường +2~3% với RVOL khoảng 2×. Nó bị loại
+ở **cả ba tầng**, và tầng thứ nhất là tầng chết:
+
+| Tầng | Ngưỡng hiện tại | Breakout thật |
+|---|---|---|
+| `universe_live.py` | Alpaca movers + Yahoo `%chg > 4` | +2.5% → **không bao giờ xuất hiện trong danh sách** |
+| `scorer.rank` | `chg ≥ 5%` | +2.5% → loại |
+| `scorer.rank` | `rvol ≥ 3.0` | 2.0× → loại |
+
+Tầng đầu là điểm quan trọng nhất: nới ngưỡng trong `scorer.py` cũng vô ích, vì
+mã đó **không có trong universe** để mà chấm. Phải đảo chiều luồng dữ liệu:
+danh sách theo dõi sinh ra từ tối hôm trước, phiên hôm sau chỉ canh mức pivot
+của đúng những mã đó.
+
+Và một mã rơi 70% từ đỉnh thì cần *lịch sử*, không cần realtime. Cả hai setup
+mới đều là setup **theo ngày**, nên chúng có một tính chất mà setup spike không
+có: **backtest được**.
+
+#### 9.b Ba quyết định đã chốt
+
+1. **Giữ engine spike song song**, gắn nhãn `setup` (SPIKE/BO/RV) vào bảng
+   `alerts` và `outcome`. Sau vài tuần bảng `outcome` sẽ trả lời "spike có đáng
+   giữ không" bằng số. Xoá bây giờ là xoá cả chuỗi dữ liệu đang tích.
+2. **Nhịp**: candidates 3 phút/vòng trong phiên + một lần quét chốt ~15:40 ET
+   (`mso ≈ 370`) + báo cáo sau đóng cửa. Vòng `loop_score` 25 giây giữ nguyên
+   cho spike.
+3. **Ngưỡng riêng từng setup** — `scorer.py` chuyển từ hằng số cấp module sang
+   3 profile:
+
+| | SPIKE (giữ nguyên) | BO | RV |
+|---|---|---|---|
+| Giá tối thiểu | $1 | $1.5 | $3 |
+| adv20 | 200k | 200k | 500k |
+| %chg kích hoạt | ≥ 5% | ≥ 1.5% trên pivot | ≥ 7% |
+| RVOL | ≥ 3.0 | ≥ 1.8 | ≥ 3.0 |
+| Số liệu cơ bản | không cần | không cần | **bắt buộc đủ** |
+
+#### 9.0 Kho nến ngày — `bars.py` ✅ ĐÃ XONG
+
+`prep.py` tải 4 tháng nến ngày cho ~5000 mã rồi **ném đi**, chỉ giữ 3 con số.
+Không thể đo "nền 6 tuần chặt dần" bằng 3 con số đó.
+
+Bảng `bars(sym, d, o, h, l, c, ac, v)`, giữ ~3 năm. Chi phí ~70–90 MB, và cập
+nhật hằng ngày chỉ tải 1 tháng gần nhất nên **nhanh hơn** `prep.py` hiện tại.
+
+Hai quyết định trong đó đáng nêu:
+
+- **Lưu cả `c` (thô) và `ac` (adj close).** `load(adj=True)` back-adjust theo
+  hệ số `ac/c` → một lần chia 1:10 không còn biến thành "rơi 90%" giả trong
+  `structure.py`; volume chia ngược lại để tổng tiền không đổi. Ngược lại
+  `prep.py` gọi `load(adj=False)` vì `prev_close` phải khớp quote live.
+- **Tầng lưu trữ thuần stdlib** (chỉ `sqlite3`), chỉ `fetch()` mới cần
+  yfinance. Nhờ vậy nó tự test được trên máy dev không có pandas — kể cả phần
+  đọc DataFrame, bằng một DataFrame giả trong `tests/test_bars.py`.
+
+`bars.partial_day()` bỏ nến của ngày đang chạy (trước 16:00 ET) — không thì
+`adv20`/`atr14` của toàn DB tính trên một nến chưa chốt.
+
+#### 9.1 Đo cấu trúc giá — `structure.py` ✅ ĐÃ XONG
+
+Quan hệ với `setups.py` giống quan hệ `vprofile.py` ↔ `scorer.py`: file này
+chỉ **đo**, không **phán xét**. Không có ngưỡng "thế nào là nền tốt" ở đây — nó
+chỉ nói "nền dài 34 phiên, biên độ 12%, pivot 10.05, volume co ngót còn 0.7".
+Tách thế vì khi backtest cho biết ngưỡng sai, ta muốn sửa **ngưỡng** chứ không
+phải sửa lại cách đo.
+
+Bảng `struct`, một dòng/mã, dựng lại mỗi tối:
+
+| Nhóm | Cột |
+|---|---|
+| Mốc | `d` (ngày của nến cuối), `px`, `n_bars` |
+| Xu hướng | `sma20/50/200`, `sma50_slope`, `hi52`, `lo52`, `off_high`, `up_from_low`, `ret63`, `rs_pct` |
+| Nén biên độ | `atr14`, `atr_pct`, `atr_contract` (so với 50 phiên trước), `tight10`, `depth20` |
+| Nền tích luỹ | `base_len`, `base_depth`, `base_slope`, `base_dryup`, `pivot`, `dist_pivot` |
+| Thanh khoản | `adv20`, `adv50`, `dryup` |
+| Nến hôm nay | `close_pos`, `gap`, `vol_ratio` |
+| Cú rơi | `below20_streak`, `days_since_low` |
+
+`dist_pivot` là **dấu ngược trực giác**: `> 0` = còn cách pivot bấy nhiêu %,
+`<= 0` = đã ở trên pivot. Viết vậy để `ORDER BY dist_pivot` cho ra đúng thứ tự
+"sắp vượt trước".
+
+**Ba chỗ dễ sai mà `find_base()` phải xử lý** — cả ba đều do test bắt được, và
+đều là loại lỗi sẽ không bao giờ tự lộ ra khi chạy thật:
+
+1. **Không được lấy "đoạn dài nhất còn dưới 35%".** Biên độ không bao giờ giảm
+   khi cửa sổ dài ra, nên cách đó luôn kéo về phía rộng: một đoạn phẳng 45
+   phiên đi sau cú tăng chậm bị báo thành **nền 90 phiên** — nuốt cả đoạn tăng
+   vào nền. Nền tích luỹ phải *phẳng*.
+2. **Độ trôi phải đo theo biên độ, không phải bằng % cố định.** Với ngưỡng
+   "trôi ≤ 15%", một đoạn trượt đều từ 30 xuống 26 trong 90 phiên vẫn được nhận
+   là "nền 13%" — trong khi 20 phiên đầu và 20 phiên cuối của nó không còn giao
+   nhau. Nền thật thì giá dao động qua lại: **biên độ >> độ trôi**. Điều kiện:
+   `|trôi| ≤ max(0.5 × biên_độ, 2%)`.
+3. **`pivot` phải tính từ nến TRƯỚC hôm nay.** Nếu không, cú breakout hôm nay
+   tự nâng pivot của chính nó lên và điều kiện `px > pivot` **không bao giờ**
+   đạt. `metrics()` gọi `find_base(bs[:-1])`.
+
+Hai chỗ khác cùng loại:
+
+- **`adv20` không tính nến hôm nay.** Gộp hôm nay vào mẫu số làm RVOL nhỏ lại
+  đúng lúc nó cần to.
+- **`dryup` so với `adv50` gần như vô dụng** khi nền dài và im lặng suốt: adv50
+  cũng thấp theo, tỉ lệ tiến về 1. Nên `base_dryup` đo **co ngót ngay trong
+  nền** (5 phiên cuối so với cả nền) — đó mới là dấu hiệu cạn trước khi bật. Hệ
+  quả: `setups.py` không được coi `dryup` thấp là điều kiện *bắt buộc* của BO.
+
+`structure.baseline()` là bản không-pandas của `prep.compute()`, nên
+`prep.py --from-bars` dựng được bảng `base` từ kho nến **không gọi mạng lần
+nào** — về sau chỉ còn một lượt tải yfinance mỗi tối thay vì hai.
+
+```bash
+python bars.py --sync --full         # lần đầu: 2 năm nến (chạy trong tmux)
+python bars.py --sync                # hằng ngày: 1 tháng gần nhất
+python bars.py --info NVDA           # kho có gì, 10 nến cuối của một mã
+python structure.py --build          # dựng bảng struct + in list "sắp vượt pivot"
+python structure.py --show NVDA
+python prep.py --from-bars           # base từ kho nến, không gọi mạng
+```
+
+Cron sau khi Phase 9 chạy ổn (thay dòng `prep.py` cũ):
+
+```cron
+0 8 * * 1-5  cd /home/ubuntu/scanner && .venv/bin/python bars.py --sync >> state/prep.log 2>&1 && .venv/bin/python prep.py --from-bars >> state/prep.log 2>&1 && .venv/bin/python structure.py --build >> state/prep.log 2>&1 && .venv/bin/python setups.py --build >> state/prep.log 2>&1
+```
+
+⚠️ Đừng đổi cron trước khi đối chiếu: chạy `prep.py --from-bars` trên **bản sao
+DB** rồi so `adv20`/`prev_close` với bảng `base` hiện tại. Lệch quá vài phần
+trăm nghĩa là kho nến thiếu ngày, và mọi thứ dựa trên baseline sẽ sai *âm thầm*
+— đúng kiểu lỗi mục 7c nói tới.
+
+#### 9.2 Hai setup — `setups.py`, bảng `candidates` ✅ ĐÃ XONG
+
+Tách làm **hai bước**, và đây là chỗ dễ làm sai nhất của cả phase:
+
+| Bước | Khi nào | Đọc gì | Trả lời |
+|---|---|---|---|
+| `bo_candidate()` / `rv_candidate()` | buổi tối | bảng `struct` | "mã này **có nền** đáng theo dõi không" → bảng `candidates` + `pivot` |
+| `trig_bo()` / `trig_rv()` | trong phiên | quote | "hôm nay nó **có kích hoạt** không" → alert |
+
+Bước 1 không được dùng dữ liệu trong phiên, bước 2 không được tính lại nền.
+Nhờ ranh giới đó, `backtest.py` (9.7) gọi **đúng hai hàm này** trên nến ngày quá
+khứ mà không phải viết lại logic — nếu backtest và bot chạy hai đoạn code khác
+nhau thì kết quả backtest không nói lên điều gì về bot.
+
+Mọi ngưỡng nằm trong hai dict `BO` / `RV` ở đầu file, không rải rác trong hàm —
+vì `backtest.py` sẽ sửa chính hai dict đó, và sửa một chỗ thì không có bản sao
+nào bị bỏ sót. Cả hai hàm nhận tham số `g=BO` nên backtest quét được nhiều bộ
+ngưỡng cùng lúc mà không cần đụng vào biến toàn cục.
+
+**BO** — nền: `base_len ≥ 20` · `base_depth ≤ 20%` (≤ 35% cho mã dưới $10) ·
+`atr_contract ≤ 0.75` · giá trên `sma50`, `sma50_slope ≥ 0` · `off_high ≤ 25%`.
+Kích hoạt: `px > pivot × 1.005` · `rvol ≥ 1.8` · đóng ở nửa trên biên độ ngày ·
+dollar-vol ≥ $2M.
+
+**RV** — `off_high ≥ 50%` · `ret63 ≤ −10%` · `days_since_low ≤ 30` ·
+`up_from_low ≤ 40%` · giá ≥ $3, adv20 ≥ 500k · điểm cơ bản (9.3) đạt.
+Kích hoạt: +7% với `rvol ≥ 3`, `close_pos ≥ 0.75`, và **lấy lại `sma20`** sau
+nhiều tuần ở dưới.
+
+Bốn quyết định trong đó không hiển nhiên:
+
+- **`dist_pivot` phải nằm trong `[−5%, +12%]`.** Cách pivot 30% thì hôm nay
+  không thể vượt — lấy quote của nó là lãng phí; ở trên pivot quá 5% thì đã vào
+  muộn. Đây cũng là cái giữ danh sách theo dõi đủ nhỏ để lấy quote theo lô.
+- **BO không alert khi giá đã vượt pivot 15%.** Một mã +19% trên pivot giữa
+  phiên là gap-and-go — việc của SPIKE. Để BO nhận nó thì entry đã xấu và
+  `outcome` sẽ trộn hai loại setup vào một cột.
+- **Gap > 8% là *cảnh báo*, không phải loại.** Nó vẫn là breakout thật, chỉ là
+  entry xấu; ghi vào `warn` để panel nói ra, chứ bỏ đi thì mất luôn những cú
+  breakout mạnh nhất.
+- **RV thiếu số liệu cơ bản = không kích hoạt**, dù giá chạy bao nhiêu. Trạng
+  thái `fund_ok` có ba giá trị: `True` / `False` / `None` (chưa biết) — và
+  `None` **không bao giờ** được coi là đạt. Chưa có 9.3 nên hiện tại RV chỉ
+  dựng được danh sách theo dõi, chưa alert; `--build` in ra "chờ số liệu cơ
+  bản: N" để con số đó không im lặng.
+
+Cột `quality` (0..1) **chỉ để xếp hạng** danh sách theo dõi cho khỏi trần
+`MAX_CAND = 500`, không phải điểm alert — điểm alert do `scorer.py` chấm khi có
+số liệu trong phiên. Dùng chung một con số cho hai việc là cách chắc chắn để sau
+này không biết nên điều chỉnh nó theo cái gì.
+
+`load_candidates()` mặc định **bỏ mọi dòng cũ hơn 5 ngày**. Chốt an toàn này
+thật sự cần: cron chết thì bảng `struct` đứng yên, và không có gì báo lỗi — chỉ
+có pivot cũ nằm đó, còn alert vẫn gửi như thật.
+
+```bash
+python setups.py                 # selftest — không cần mạng, không cần DB
+python setups.py --build         # quét struct -> candidates + bảng lý do bị loại
+python setups.py --show          # danh sách đang theo dõi
+python setups.py --show BO --n 40
+```
+
+#### 9.3 Cơ bản — `fundamentals.py`, bảng `fund` ▶ CHƯA LÀM
+
+Phần "cơ bản tốt", và cũng là phần dễ tự lừa mình nhất: mã rơi 70% mà cơ bản
+"tốt" thường là bẫy pha loãng. Nên điểm cơ bản xây quanh **khả năng sống sót và
+không pha loãng**, không quanh P/E:
+
+- Tăng trưởng doanh thu YoY, biên gộp có ổn định không
+- Dòng tiền hoạt động dương, **hoặc** tiền / tốc độ đốt tiền ≥ 6 quý
+- Nợ / vốn chủ, tiền so với nợ ngắn hạn
+- **Tăng trưởng số lượng cổ phiếu YoY** — trên 25%/năm là cờ đỏ, quan trọng
+  hơn mọi chỉ số lợi nhuận với small-cap
+- Lịch sử hồ sơ pha loãng 12 tháng: S-1 / S-3 / 424B5 / ATM (mở rộng `edgar.py`)
+
+Nguồn: SEC XBRL **frames API**
+(`data.sec.gov/api/xbrl/frames/us-gaap/<concept>/USD/CY2025Q2.json`) — một
+request trả về giá trị của *toàn bộ* doanh nghiệp cho một chỉ tiêu một quý, nên
+phủ 5000 mã bằng ~40 request/tuần. `SEC_UA` đã có sẵn.
+
+⚠️ Frames phủ **không đầy đủ**: cùng một khái niệm có nhiều tag XBRL khác nhau
+(`Revenues` vs `RevenueFromContractWithCustomerExcludingAssessedTax`...). Sẽ có
+mã thiếu số liệu → trạng thái phải là **"chưa biết"** và bị loại khỏi RV, chứ
+không được coi là "tốt".
+
+#### 9.4 Đảo chiều luồng live ▶ CHƯA LÀM
+
+- Nguồn universe thứ ba: **chính bảng `candidates`** — lấy quote theo lô cho
+  100–400 mã đó. Setup theo ngày không cần realtime từng giây; trễ 15 phút của
+  Yahoo là chấp nhận được, và volume Yahoo là volume **hợp nhất**.
+  ⚠️ Alpaca free tier chỉ có bar/snapshot IEX (~2% volume toàn thị trường) →
+  RVOL sai hoàn toàn. Không dùng được cho việc này, dù screener của họ thì SIP.
+- `scorer.py` tách thành `score_spike` / `score_breakout` / `score_reversal`.
+- Vòng mới `loop_setups` (180s) + mốc quét chốt phiên trong `clock.py`.
+
+#### 9.5 Sửa cửa sổ tin 4 giờ ▶ CHƯA LÀM
+
+`WINDOW_H = 4` đúng cho spike ("mã này chạy vì cái gì *lúc này*") nhưng vô
+nghĩa cho nền tích luỹ 3 tháng — catalyst ở đó là báo cáo quý cách đây 2 tuần.
+
+- Ghi tin xuống SQLite (bảng `news`), giữ **30 ngày**, thay vì dict cuộn trong
+  RAM mất sạch sau mỗi restart.
+- Cửa sổ tra theo setup: spike 4h · BO/RV 30 ngày, hiển thị kèm tuổi tin
+  ("8 ngày trước: Q3 beat").
+- Tách hai khái niệm đang bị trộn: **tin mới** (giải thích cú chạy hôm nay) và
+  **rủi ro pha loãng** (bất kỳ hồ sơ offering trong 90 ngày — trừ điểm bất kể
+  tuổi).
+- Với BO, **không có tin gì là điểm cộng ngầm**: nền tích luỹ im lặng chính là
+  dấu hiệu gom hàng. Đừng bắt setup này phải có catalyst.
+
+#### 9.6 Trình bày ▶ CHƯA LÀM
+
+Panel riêng từng setup. BO cần thấy nền dài bao lâu, pivot ở đâu, đang trên
+pivot mấy %; RV cần thấy rơi bao sâu, điểm cơ bản, runway, lịch sử pha loãng.
+
+#### 9.7 Backtest — `backtest.py` ✅ ĐÃ XONG
+
+Phần trả lời trực tiếp cho "cách đánh giá hiện tại không ổn". Mỗi phiên, sinh
+candidate **chỉ bằng nến tới phiên đó**, rồi đọc nến phiên sau để xem có kích
+hoạt không, và ghi lợi nhuận sau 1/5/10/20 phiên.
+
+Ba nguyên tắc, và cả ba đều có test riêng vì backtest sai thì **không bao giờ
+báo lỗi** — nó chỉ in ra một con số đẹp hơn sự thật:
+
+1. **Gọi đúng hàm của bot.** `bo_candidate` / `trig_bo` là cùng một đoạn code
+   bot chạy thật. Nếu backtest viết lại logic thì kết quả không nói lên điều gì
+   về bot. Test: đổi `setups.BO["rvol"]` thì kết quả backtest phải đổi theo.
+2. **Không nhìn trước tương lai.** Cắt chuỗi nến ngay sau ngày vào lệnh thì
+   lệnh vẫn phải được sinh ra với **cùng giá vào**, chỉ các cột `r5`/`r10` mới
+   thành `None`.
+3. **Luôn so với mốc ngẫu nhiên.** Báo cáo có dòng `ngau nhien` = lợi nhuận
+   trung vị của việc vào mù mọi (mã, ngày). "55% thắng sau 10 phiên" không có
+   nghĩa gì nếu vào mù cũng thắng 54%.
+
+Bảng ra:
+
+```
+nhom              n   win1    med1  win10   med10  win20   med20     MFE     MAE
+BO              412    54%   +0.3%    58%   +2.1%    55%   +3.4%  +11.2%   -6.8%
+ngau nhien        -      -   +0.0%      -   +0.4%      -   +0.9%       -       -
+```
+
+`--by base_len` / `base_depth` / `rs_pct` / `rvol` / `quality` cắt bảng theo
+từng biến — đây mới là cái để chỉnh ngưỡng, vì nó cho thấy **ngưỡng nào thật sự
+trả tiền** thay vì chỉ ra một con số tổng.
+
+```bash
+python backtest.py                       # selftest — không cần DB
+python backtest.py --run --limit 300     # chạy thử nhanh
+python backtest.py --run --by base_len
+python backtest.py --run --setup BO --rvol 2.5
+python backtest.py --run --setup RV --rv-no-fund
+```
+
+Bốn điều phải đọc cùng kết quả, nếu không thì con số còn tệ hơn không có:
+
+- **Vào lệnh ở giá đóng cửa**, còn bot alert *giữa* phiên. Thực tế sẽ xấu hơn —
+  giữa phiên bạn vào ở giá cao hơn giá đóng cửa ở đúng những ngày đảo chiều.
+- **Kho nến chỉ còn mã đang sống.** Mã huỷ niêm yết không có trong đó, nên mọi
+  con số đẹp hơn thực tế. RV bị lệch nặng nhất — đừng so `win%` của RV và BO
+  như hai số cùng thang đo.
+- **`MAE` quan trọng ngang `med`.** MAE trung vị −12% thì dù backtest lãi 12%
+  cũng không giao dịch được: bạn đã cắt lỗ trước khi nó lãi.
+- **RV mặc định ra 0 lệnh** vì chưa có 9.3, đúng như bot. `--rv-no-fund` đo
+  riêng phần cấu trúc và in cảnh báo — đừng dùng số đó để chỉnh ngưỡng RV.
+
+Một chi tiết về tốc độ: `metrics()` là phần đắt nhất (O(số nến) mỗi ngày), nên
+`_could_fire()` sàng trước bằng `rvol` và dollar-vol tính trong O(1) từ mảng
+thô. Cả hai setup đều đòi `rvol ≥ 1.8` nên đây là **điều kiện cần**, không phải
+điều kiện đủ — bỏ qua sớm những ngày không thể kích hoạt cắt khoảng 90% công
+việc mà không đổi kết quả. `tests/test_backtest.py` chốt luôn tính chất đó, vì
+một bộ sàng lọc quá tay sẽ làm giảm số lệnh mà chẳng ai biết.
+
+#### 9.8 Đo kết quả ▶ CHƯA LÀM
+
+Thêm cột `setup` vào `outcome`, và thêm mốc 1 ngày / 5 ngày / 10 ngày.
+`px15`/`px60` là thang đo của day-trade; đo swing setup bằng nó sẽ luôn ra kết
+luận sai.
+
+---
+
 ### Những thứ mình khuyên KHÔNG làm
 
 Có giá trị ngang phần trên:
@@ -1872,21 +2256,37 @@ của việc chỉnh panel giờ gần bằng không so với việc biết aler
 ✅ Phase 2 (halt feed)          ← ĐÃ CÀI
 ✅ Phase 4 (test + CI)          ← ĐÃ CÀI
 ✅ Phase 3 (catalyst/news)      ← ĐÃ CÀI, còn chờ một lần kiểm live
-▶  Đọc bảng Phase 1 → chỉnh ALERT_SCORE và trọng số   (cần ~3-4 tuần dữ liệu)
-   Trong lúc chờ: Phase 5 (bớt rác, bớt trùng) — rẻ nhất trong ba phase còn lại
-   Sau đó Phase 6, 7 tuỳ chỗ nào làm bạn khó chịu nhất
-   Để dành Phase 8
+✅ Phase 9.0 (bars.py)          ← ĐÃ CÀI, chờ chạy --sync --full trên VM
+✅ Phase 9.1 (structure.py)     ← ĐÃ CÀI, chờ đối chiếu --from-bars
+✅ Phase 9.2 (setups.py)        ← ĐÃ CÀI, RV chờ 9.3 mới alert được
+✅ Phase 9.7 (backtest.py)      ← ĐÃ CÀI, chờ kho nến trên VM để có số thật
+▶  Chạy backtest trên VM → chỉnh dict BO trong setups.py bằng SỐ
+   Rồi 9.4 (đảo chiều luồng live) → có alert BO thật
+   Sau đó 9.3 (fundamentals) → mở khoá setup RV
+   Song song, không phụ thuộc: 9.8 (cột setup) — làm sớm thì số liệu tích sớm
+   Cuối: 9.5 (cửa sổ tin), 9.6 (panel)
+   Phase 5-8 lùi lại: chúng làm engine spike sạch hơn, nhưng 9.x mới đổi
+   được việc bot đi tìm cái gì
 ```
 
-Điểm quan trọng nhất của thứ tự này: **Phase 1 chỉ mất một buổi để viết, nhưng
-cần vài tuần *thời gian* để tích dữ liệu.** Nó đã chạy từ lúc cài, nên đừng ngồi
-đợi bảng số — cả bốn phase code đã xong, giờ làm Phase 5 trong lúc chờ.
+Hai điểm quan trọng của thứ tự này:
 
-Cũng vì vậy mà Phase 3 nên làm trước Phase 5: `news_group` càng có sớm thì bảng
-Phase 1 càng trả lời được nhiều câu hơn khi đủ mẫu.
+**9.7 phải đi liền sau 9.2, không để dành.** Định nghĩa nền trong
+`structure.py` là một *giả thuyết* — nó đã qua test về mặt "đo đúng cái mình
+định đo", nhưng chưa có gì chứng minh nền phẳng 30 phiên với volume cạn thật sự
+báo trước một cú tăng. Chỉnh ngưỡng trong `setups.py` bằng cảm giác rồi chạy
+live 3 tháng để biết kết quả là đúng cái sai mà Phase 9 đang sửa. Cả hai setup
+đều theo nến ngày nên **backtest được** — đừng bỏ lợi thế đó.
+
+**9.8 làm được ngay và nên làm sớm**, vì nó chỉ là một cột `setup` cộng thêm
+mốc đo 1/5/10 ngày. Cột càng có sớm thì tới lúc đọc bảng `outcome` càng có mẫu
+để so ba setup với nhau. Cùng logic với Phase 1: viết mất một buổi, nhưng cần
+*thời gian* mới có số.
 
 Giờ đã có test và CI thì mọi chỉnh sửa sau này đều rẻ hơn: sai trọng số hay lệch
-layout bị bắt trước khi `git pull` lên VM.
+layout bị bắt trước khi `git pull` lên VM. Với Phase 9 thì tầng lưu trữ và tầng
+đo là **thuần stdlib** nên còn chạy được cả trên máy dev — 4 lỗi thiết kế của
+`find_base()` bị bắt ở đó, trước khi đẩy lên VM.
 
 ## Giấy phép
 

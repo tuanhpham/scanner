@@ -113,6 +113,43 @@ def compute(df: pd.DataFrame) -> dict | None:
 
 
 
+# ---------------- 3b. Dung baseline tu kho nen, KHONG goi mang ----------------
+def from_bars(con: sqlite3.Connection, cik: dict[str, str],
+              limit: int = 0) -> int:
+    """Dung lai bang `base` tu kho nen cua bars.py. Phan tinh toan o
+    structure.baseline() (thuan stdlib, co test rieng).
+
+    Kho nen da bo nen dang chay (bars.partial_day()) nen o day khong phai xu ly
+    lai chuyen "prep chay giua phien" nhu compute().
+    """
+    import bars
+    import structure
+
+    syms = bars.syms(con, min_rows=25)
+    if limit:
+        syms = syms[:limit]
+    log(f"--from-bars: {len(syms)} ma trong kho nen")
+
+    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    rows = []
+    for s in syms:
+        m = structure.baseline(bars.load(con, s, limit=40, adj=False),
+                              MIN_ADV, MIN_PRICE)
+        if m:
+            rows.append((s, m["adv20"], m["atr14"], m["prev_close"],
+                         cik.get(s), now))
+    if rows:
+        con.executemany(
+            "INSERT INTO base(sym,adv20,atr14,prev_close,cik,updated) "
+            "VALUES(?,?,?,?,?,?) ON CONFLICT(sym) DO UPDATE SET "
+            "adv20=excluded.adv20, atr14=excluded.atr14, "
+            "prev_close=excluded.prev_close, "
+            "cik=COALESCE(excluded.cik, base.cik), updated=excluded.updated",
+            rows)
+        con.commit()
+    return len(rows)
+
+
 def download_batch(syms: list[str]) -> dict[str, pd.DataFrame]:
     raw = yf.download(syms, period="4mo", interval="1d", group_by="ticker",
                       auto_adjust=False, threads=True, progress=False)
@@ -139,9 +176,11 @@ CREATE INDEX IF NOT EXISTS ix_base_adv ON base(adv20);
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--from-bars", action="store_true",
+                    help="tinh tu kho nen cua bars.py, khong tai lai tu yfinance")
     args = ap.parse_args()
 
-    if not ALPACA_KEY or not ALPACA_SECRET:
+    if not args.from_bars and not (ALPACA_KEY and ALPACA_SECRET):
         log("!! Thieu ALPACA_KEY / ALPACA_SECRET trong .env")
         return 1
 
@@ -150,6 +189,22 @@ def main() -> int:
     con.executescript(DDL)
 
     cik = fetch_cik_map()
+
+    if args.from_bars:
+        t0 = time.time()
+        kept = from_bars(con, cik, args.limit)
+        now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+        con.execute("INSERT INTO meta(k,v) VALUES('built',?) "
+                    "ON CONFLICT(k) DO UPDATE SET v=excluded.v", (now,))
+        con.execute("INSERT INTO meta(k,v) VALUES('count',?) "
+                    "ON CONFLICT(k) DO UPDATE SET v=excluded.v", (str(kept),))
+        con.commit()
+        total = con.execute("SELECT COUNT(*) FROM base").fetchone()[0]
+        con.close()
+        log(f"XONG (--from-bars): {kept} ma cap nhat, {total} ma trong DB, "
+            f"{time.time() - t0:.0f}s")
+        return 0
+
     syms = fetch_universe()
     if args.limit:
         syms = syms[: args.limit]
@@ -179,11 +234,15 @@ def main() -> int:
             rows.append((s, m["adv20"], m["atr14"], m["prev_close"],
                          cik.get(s), now))
         if rows:
+            # COALESCE cho cik: SEC_UA sai -> fetch_cik_map() tra {} -> neu ghi
+            # de thang thi mot lan prep.py chay se xoa sach cik cua CA DB va
+            # moi nut "Ho so SEC" chet am tham.
             con.executemany(
                 "INSERT INTO base(sym,adv20,atr14,prev_close,cik,updated) "
                 "VALUES(?,?,?,?,?,?) ON CONFLICT(sym) DO UPDATE SET "
                 "adv20=excluded.adv20, atr14=excluded.atr14, "
-                "prev_close=excluded.prev_close, cik=excluded.cik, "
+                "prev_close=excluded.prev_close, "
+                "cik=COALESCE(excluded.cik, base.cik), "
                 "updated=excluded.updated", rows)
             con.commit()
             kept += len(rows)
