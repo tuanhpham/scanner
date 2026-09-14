@@ -42,6 +42,7 @@ jobs:
           python outcome.py        # khong doi so = _smoke()
           python events.py         # khong doi so = _smoke()
           python notifier.py       # spool: giu tin, dung thu tu
+          python push.py           # payload snapshot + DB chi doc, khong ra mang
 
       - name: Test chay duoc ma khong co thu vien
         # Cac file test tu bo qua khi thieu thu vien (tests/_util.py: need()).

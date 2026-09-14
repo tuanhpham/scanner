@@ -181,3 +181,198 @@ b) Git chưa cấu hình tên/email, commit 71be19f ghi tác giả là
 - Với bước 5: cả bảng LÝ DO BỊ LOẠI của setups.py --build.
 - Với bước 6: cả bảng backtest, gồm dòng `ngau nhien` và hai cột MFE/MAE.
 - Log: tail -50 state/prep.log
+
+
+===============================================================================
+6. WEB ĐIỀU KHIỂN — bước 1+2 đã viết (2026-09-14)
+===============================================================================
+
+Mục tiêu: điều khiển setup/cảnh báo/tin nhắn từ web, dùng lại app Cloudflare đã
+deploy (repo lux-lookthrough, project Pages `the-professional`).
+
+Hình dạng: VM CHỈ GỌI RA, không nhận vào. Không mở cổng Oracle, không cloudflared,
+không TLS, không web server nào trên VM.
+
+  VM (python)                          Cloudflare Pages
+    push.py  ──── HTTPS ra ────>  functions/api/scanner  ──>  D1 (scanner_kv)
+    poll config/commands <─────                 ^
+                                     tab Scanner trong app (browser/PWA)
+
+Vì sao push.py chạy NGOÀI process scanner (cron gọi, không phải asyncio):
+một cuộc gọi HTTP treo trong vòng lặp sẽ làm dừng cả vòng quét, và thứ bị treo ở
+đây là dashboard — thứ ít quan trọng nhất trong hệ thống. Ranh giới đó không được
+phá. main.py chỉ ghi một dòng `beat` vào bảng `kv` (không ra mạng); push.py đọc DB
+rồi đẩy lên.
+
+Xoá push.py đi thì bot chạy y nguyên. Để trống SCANNER_PUSH_URL/SCANNER_TOKEN thì
+push.py không làm gì. Đó là mặc định.
+
+--- ĐÃ VIẾT ---
+
+repo scanner:
+  push.py              mới  — payload + gửi, thuần stdlib, DB mở mode=ro
+  tests/test_push.py   mới  — 23 test chạy không cần thư viện + 2 test contract
+  main.py              sửa  — write_beat() + gọi trong loop_clock (vòng 20s có sẵn)
+  .env.example         sửa  — SCANNER_PUSH_URL, SCANNER_TOKEN
+  ci.yml               sửa  — thêm `python push.py` vào selftest
+
+repo lux-lookthrough (screener-ts/apps/desktop/):
+  functions/api/scanner/[[path]].ts   mới  — endpoint, token riêng, khoá scanner:*
+  schema.sql                          sửa  — bảng scanner_kv
+  wrangler.toml                       sửa  — ghi chú SCANNER_TOKEN
+
+  --- bước 3 (viết cùng ngày) ---
+  src/adapters/scannerClient.ts   mới  — scannerPull(), đọc bằng x-sync-code
+  src/tabs/scannerTab.ts          mới  — tab Scanner chỉ đọc
+  src/main.ts                     sửa  — TABS + renderTab + nút menu
+  index.html                      sửa  — <section id="tab-scanner">
+  src/ui/i18n.ts                  sửa  — nav.scanner + nhóm khoá scan.*
+
+Đã kiểm trên máy dev: compileall sạch; python push.py = 25 kiểm tra OK;
+tests/test_push.py = 23 ok / 2 skip (2 test cần main.py, tức cần httpx -> chạy ở
+job pytest của CI). tsc --strict sạch cho file TS (đã xác minh tsc thật sự kiểm
+file, không bị coi tên [[path]].ts là glob).
+Bước 3: `npm run typecheck --workspace @screener/desktop` sạch, `npm run build`
+ra dist thành công.
+
+CHƯA test đường mạng nào. Máy dev không chạy được API.
+
+Bẫy trên máy dev (Windows + OneDrive): screener-ts/node_modules/@screener/ RỖNG —
+npm workspace link chưa được tạo, nên tsc báo ~25 lỗi "Cannot find module
+'@screener/core'" ở các file KHÔNG liên quan gì đến việc mình sửa. Không phải lỗi
+code. Chữa một lần:
+  cd screener-ts && cmd /c "mklink /J node_modules\@screener\core packages\core"
+(node_modules không nằm trong git nên đây là việc của từng máy.)
+
+--- THỨ TỰ CHẠY ---
+
+Bước A. Cloudflare (máy nào cũng được, cần npx + đăng nhập wrangler)
+  cd screener-ts/apps/desktop
+  npx wrangler d1 execute screener-sync --file=./schema.sql --remote
+  npx wrangler pages secret put SCANNER_TOKEN --project-name the-professional
+      -> tự sinh một chuỗi dài, dán vào, GIỮ LẠI để bước B dùng
+  (cd ../.. && npm run build --workspace @screener/core \
+             && npm run build --workspace @screener/desktop)
+  npx wrangler pages deploy dist --project-name the-professional
+      ^ PHẢI deploy từ apps/desktop, không phải từ gốc monorepo — nếu không thì
+        toàn bộ functions/ không được ship (wrangler.toml đã ghi rõ chuyện này).
+
+Bước B. VM
+  cd ~/scanner && git pull && source .venv/bin/activate
+  python -m pytest -q                     # 2 test contract phải chạy, không skip
+  python push.py                          # selftest, không ra mạng
+
+  Thêm vào .env:
+    SCANNER_PUSH_URL=https://the-professional.pages.dev/api/scanner
+    SCANNER_TOKEN=<chuỗi ở bước A>
+  (URL không có dấu / ở cuối. Nếu app có domain riêng thì dùng domain đó.)
+
+  python push.py --ping
+      Phải ra: HTTP 200 {"ok": true, "role": "writer", "keys": 0, ...}
+      HTTP 401 = token lệch giữa .env và Cloudflare secret.
+      HTTP 503 = thiếu binding D1, xem lại wrangler.toml.
+      HTTP 404 = deploy sai chỗ (deploy từ gốc monorepo, functions không lên).
+
+  python push.py --all --dry              # xem payload, chưa gửi
+  python push.py --all                    # gửi thật
+  python push.py --get status             # đọc ngược để chắc đã lên
+
+Bước C. cron (thêm 2 dòng, KHÔNG sửa dòng nào đang có)
+  CRON_TZ=America/New_York
+  * 4-20 * * 1-5  cd /home/ubuntu/scanner && .venv/bin/python push.py --status >> state/push.log 2>&1
+  30 8 * * 1-5    cd /home/ubuntu/scanner && .venv/bin/python push.py --all    >> state/push.log 2>&1
+
+  Dòng --status mỗi phút trong khung 04:00-20:59 ET (phủ cả pre/after-market).
+  Dòng --all đặt SAU cron setups.py --build của bước 7 mục 2, không đặt trước.
+
+  Ngân sách D1 free: --status mỗi phút = ~1000 lần/ngày, nhưng push.py bỏ qua khi
+  payload KHÔNG ĐỔI (so digest, đã bỏ mốc thời gian ra ngoài) nên số write thật
+  thấp hơn nhiều. Đừng bao giờ đổi sang đẩy một dòng mỗi mã: 500 candidates x mỗi
+  3 phút = ~130k write/ngày, vượt hạn free và tab sẽ đứng im không báo gì.
+
+Bước D. Xem trên web (chỉ cần A và B, không cần chờ C)
+  Mở app -> menu -> "Scanner" (cột phải, dưới Hồ sơ Setup).
+  Cần đã đặt access code của app (menu -> Sync). Chưa đặt thì tab hiện đúng một
+  nút để đặt.
+  Không thấy gì -> đọc ô cảnh báo vàng ở đầu tab, nó nói thẳng thiếu cái gì.
+  Nút "Tải lại" ở góc trên: đọc lại từ đầu.
+
+--- TAB SCANNER (bước 3) CÓ GÌ ---
+
+Bốn phần, xếp theo thứ tự "sai thì không ai phát hiện ra" -> "số liệu":
+
+  1. Ô CẢNH BÁO (trên cùng, nền vàng). Mỗi dòng ở đây là một trạng thái mà
+     scanner IM LẶNG chứ không báo lỗi — đây là lý do tab này tồn tại:
+       - chưa từng đẩy status         (push.py chưa vào cron / token sai)
+       - status cũ hơn 10 phút        (cron --status đã dừng)
+       - candidates cũ hơn 5 ngày     (load_candidates() trả rỗng -> KHÔNG alert
+                                       gì cả, không lỗi, không tin nhắn)
+       - không có `beat`              (process chưa chạy, hoặc chạy bản cũ)
+       - `beat` cũ hơn 120 giây       (vòng quét đã dừng ghi nhịp tim)
+       - beat.dry = true              (đang chạy --dry: quét nhưng không gửi)
+       - universe_age > 600 giây      (nguồn giá chết, 10 vòng liền không lấy được)
+       - halts_err / news_err
+       - spool > 0                    (tin xếp hàng, Telegram đang từ chối)
+  2. TRẠNG THÁI: session, uptime, số lần quét, lỗi, universe, alert hôm nay, số
+     mã đang track, đẩy lần cuối cách đây bao lâu; rồi tuổi ba bảng bars/struct/
+     candidates (đỏ khi > 5 ngày).
+  3. DANH SÁCH THEO DÕI: một bảng mỗi setup. Cột: Sym Qual Close Pivot To-pivot
+     Base Depth Off-high RS ADV20 ATR% Fund. "To pivot" xanh khi <= 0 (đã trên
+     pivot), vàng khi <= 2%. Thẻ "120 / 412" nói thật là đang xem bao nhiêu trên
+     tổng bao nhiêu. KHÔNG sắp xếp lại theo cột khác: danh sách đã bị cắt theo
+     quality, sắp lại theo "gần pivot nhất" sẽ đọc thành "gần nhất thị trường"
+     trong khi nó chỉ là gần nhất trong top N.
+  4. LÝ DO BỊ LOẠI: mỗi setup một bảng lý do + số mã + thanh tỉ lệ, kèm thẻ
+     "qua lọc" và "bị cắt trần". Có ghi chú nhắc bảng này tính theo NGƯỠNG HIỆN
+     TẠI, không phải bảng lưu lúc dựng danh sách.
+  5. CẢNH BÁO: ngày mới nhất đang giữ. Cột +15m/+60m/Close/MFE/MAE hiện theo
+     PHẦN TRĂM so với giá lúc alert, không hiện giá thô — "+1.4%" trả lời được
+     câu "alert đó có ăn không", "18.42" thì không.
+
+Bấm vào bất kỳ dòng nào (candidate hoặc alert) mở đúng cửa sổ biểu đồ của app.
+
+Chỉ tải MỘT lần khi mở tab lần đầu (snapshot đổi theo nhịp cron, tải lại mỗi lần
+đổi tab chỉ tiêu read của D1). Nút "Tải lại" đọc lại từ đầu (since=0) chứ không
+đọc tăng dần: pull tăng dần khi VM chưa đẩy gì mới sẽ trả về rỗng, và cái đó
+trông y hệt như cầu nối bị hỏng.
+
+Tab dùng CHUNG access code với sync (x-sync-code, localStorage `sync:code`).
+Chưa có code thì tab hiện nút mở cửa sổ Sync. SCANNER_TOKEN của VM KHÔNG bao giờ
+xuống browser.
+
+--- CÒN LẠI, CHƯA VIẾT ---
+
+  Bước 4  config.py — gom ~60 ngưỡng đang rải trong main.py/setups.py/scorer.py
+          vào một chỗ, có default + khoảng hợp lệ + snapshot cho backtest.
+          Không làm bước này thì UI không xoay được ngưỡng.
+  Bước 5  trang cài đặt ghi scanner:config; python reload Ở BIÊN VÒNG LẶP;
+          ghi cfg_rev vào bảng alerts để sau còn giải thích được alert nào theo
+          luật nào.
+  Bước 6  scanner:commands + các nút (tạm dừng, tắt tiếng mã, quét lại).
+  Bước 7  xem trước tin Telegram: render.py đẩy HTML đã render lên.
+
+  Thứ tự: bước 3 XONG. Việc kế tiếp là quay lại BACKTEST (mục 2 bước 6), KHÔNG
+  phải bước 4. Chưa backtest thì chưa biết xoay ngưỡng về đâu, nên một trang cài
+  đặt để xoay ngưỡng bằng cảm giác là thứ tệ hơn không có trang nào.
+
+  Ngoài ra một khi tab Scanner đã lên, nó tự làm việc của mình: nó là chỗ đọc
+  bảng "lý do bị loại" và tuổi các bảng mà không cần ssh vào VM.
+
+  MỘT ĐIỀU CẦN ĐỒNG BỘ TAY: MAX_AGE_DAYS = 5 trong scannerTab.ts là bản chép của
+  setups.MAX_AGE. Browser không đọc được hằng số Python. Sửa MAX_AGE bên setups.py
+  thì sửa cả bên đó, không thì tab sẽ báo "im lặng" sai thời điểm.
+
+--- HAI ĐIỀU ĐÃ CÂN NHẮC, GHI LẠI ĐỂ KHÔNG LÀM LẠI ---
+
+a) KHÔNG dùng /api/sync và bảng `kv` có sẵn. Nó có collapse guard từ chối mọi
+   write làm giá trị teo hơn 50% (COLLAPSE_MIN_BYTES=200, COLLAPSE_RATIO=0.5), vì
+   với portfolio thì teo = client hỏng đang xoá dữ liệu. Với scanner thì ngược
+   lại: candidates từ 400 mã xuống 30 mã sau một phiên thị trường rơi là BÌNH
+   THƯỜNG, và snapshot cũ không có giá trị gì. Dùng lại thì đúng những ngày thị
+   trường xấu tab sẽ hiện số liệu cũ, và hiện IM LẶNG. Nên: bảng scanner_kv
+   riêng, không guard, không history/trash.
+
+b) MỘT NGƯỜI GHI CHO MỖI KHOÁ. App ghi scanner:config và scanner:commands; VM ghi
+   mọi khoá còn lại. Không bên nào read-modify-write khoá của bên kia, nên không
+   thể mất update và không cần lock. Kết quả của command đi về trên khoá riêng
+   (scanner:command_results) do VM sở hữu. Endpoint cưỡng chế việc này bằng 403.

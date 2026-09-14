@@ -10,6 +10,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime as dt
+import json
+import os
 import sqlite3
 import time
 import traceback
@@ -63,6 +65,7 @@ _NB = news.NewsBook()            # so tay tin, loop_news cap nhat moi 30s
 _BLOCKED: set[str] = set()       # ma da bi chan vi halt sev 3 (chi log 1 lan)
 _NEWS_BAD: set[str] = set()      # ma da bao tin xau (chi log 1 lan/phien)
 _SPOOL = notifier.Spool()        # tin chua gui duoc, giu tren dia qua restart
+_STARTED = time.time()           # de `beat` bao uptime: restart lien tuc thi thay ngay
 
 DDL = """
 CREATE TABLE IF NOT EXISTS alerts (
@@ -124,6 +127,42 @@ def restore_today(st: State) -> int:
         st.seen[sym] = {"best": float(best), "alerts": int(cnt)}
         st.n_alerts += int(cnt)
     return len(rows)
+
+
+def write_beat(st: State, ck: SessionClock | None, dry: bool) -> None:
+    """Ghi trang thai trong process xuong bang `kv`, khoa `beat`.
+
+    push.py doc khoa nay roi day len Cloudflare. Doi nguoc lai — de main.py tu
+    goi HTTP — thi mot cuoc goi treo se lam dung ca vong quet, va thu bi treo o
+    day la mot dashboard: thu it quan trong nhat trong he thong. Nen ranh gioi
+    nam dung o cho nay, va no la ranh gioi khong duoc pha.
+
+    Chi ghi thu KHONG co trong DB. So alert, so ma theo doi, tuoi bang struct —
+    push.py tu doc duoc, ghi lai vao day chi de lech nhau.
+
+    set_kv() tu bat het loi va chi log; khong can try/except o day.
+    """
+    store.set_kv(DB, "beat", json.dumps({
+        "ts": int(time.time() * 1000),
+        "pid": os.getpid(),
+        "up_sec": int(time.time() - _STARTED),
+        "dry": dry,
+        "session": session_state(ck),
+        "scanning": bool(ck and ck.scanning()),
+        "scans": st.scans,
+        "errors": st.errors,
+        "n_alerts": st.n_alerts,
+        "universe": len(st.universe),
+        # Tuoi cua universe la con so bao "vong universe da chet" — no chay moi
+        # 60s, nen 600 giay nghia la 10 vong lien khong lay duoc gi.
+        "universe_age": int(time.time() - st.universe_ts) if st.universe_ts else None,
+        "spool": len(_SPOOL),
+        "halts": len(_HB.by_sym),
+        # err/n_fail cua so tay halt: feed Nasdaq chet la thu im lang nhat trong
+        # ca he thong — bot van alert binh thuong, chi la khong con chan halt nua.
+        "halts_err": _HB.err or None,
+        "news_err": _NB.err or None,
+    }))
 
 
 def loud_mode(score: float) -> bool:
@@ -580,6 +619,12 @@ async def loop_clock(st: State, ck: SessionClock, dry: bool) -> None:
             # duoc goi lan nao nua, va tin trong spool se nam mai.
             if not dry and len(_SPOOL):
                 await _SPOOL.flush()
+
+            # Ghi `beat` cho push.py. Dat trong vong clock (20s) chu khong tao
+            # vong rieng: mot lan ghi kv la mot cau INSERT vao SQLite tai cho,
+            # khong dang mot task. Ghi ca trong --dry: xem duoc trang thai luc
+            # thu la nua muc dich cua no.
+            write_beat(st, ck, dry)
         except Exception:  # noqa: BLE001
             st.errors += 1
             log("[clock] " + traceback.format_exc(limit=2))
