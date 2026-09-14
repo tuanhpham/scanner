@@ -472,11 +472,27 @@ dữ liệu. Chỉ có hai cách để chuyện đó xảy ra, và kích thướ
          thì `git pull` hôm nay cũng chưa tới được con bot đang chạy, và bản
          push.py mới cũng chưa. Sửa đường dẫn cho khớp rồi restart, đừng copy DB.
 
-         Đây là khả năng đáng nghi hơn, vì bot đã gửi alert Telegram từ trước —
-         nghĩa là ở đâu đó CÓ một baseline.db đầy dữ liệu.
-
 Cả hai module đều dùng ROOT/state/baseline.db với ROOT = thư mục chứa file .py,
 đường dẫn tuyệt đối. Nên hai checkout khác nhau = hai DB khác nhau, im lặng.
+
+KẾT QUẢ ĐÃ CHẠY (2026-09-14 22:20 CEST) — là A1, không phải A2:
+
+  baseline.db          626688 byte (612 KB)
+  .tables              alert_msg  alerts  base  kv  meta  outcome  watch
+  WorkingDirectory     /home/ubuntu/scanner        <- một checkout duy nhất
+  service              active (running) 14 phút
+
+Đọc ra ba điều:
+
+  - `base` CÓ -> prep.py đường mạng cũ đã chạy. Bot vẫn sống bằng cách chấm điểm
+    spike cũ, và đó là lý do nó có gửi alert Telegram từ trước.
+  - `bars`, `struct`, `candidates` KHÔNG CÓ -> mục 2 bước 3-5 của bàn giao này
+    CHƯA BAO GIỜ ĐƯỢC CHẠY. Code Phase 9 đã push nhưng dữ liệu chưa dựng.
+    Hệ quả: load_candidates() trả rỗng -> BO/RV im lặng hoàn toàn, không lỗi,
+    không tin nhắn. Đúng cái im lặng mà tab Scanner được viết ra để phơi bày,
+    và nó vừa làm đúng việc đó.
+  - service chạy 14 phút, ghi beat mỗi 20s -> "heartbeat 2m" là bug của tab
+    (việc B), không phải bot chết. Đã sửa.
 
 
 --- VIỆC B. Deploy lại web để lấy fix heartbeat — MÁY WINDOWS ---
@@ -498,48 +514,40 @@ và Date.now() tố một vòng quét đang sống là đã chết. Giờ đo th
 PHẢI deploy từ apps/desktop, không phải từ gốc monorepo.
 
 
---- VIỆC C. Dựng kho nền (chỉ khi kết quả là A1) — TRÊN VM ---
+--- VIỆC C. Dựng kho nền — TRÊN VM. ĐÂY LÀ VIỆC CHÍNH ---
 
-  tmux new -s bars                 # BẮT BUỘC: SSH rớt giữa 45 phút là mất cả buổi
-  cd ~/scanner && source .venv/bin/activate
-  python bars.py --sync --full     # lần đầu, 30-60 phút
-                                   # Ctrl-B D để rời tmux, `tmux a -t bars` để vào lại
+A1 đã xác nhận, nên việc phải làm là MỤC 2 CỦA CHÍNH FILE NÀY, bước 2 đến 7,
+chạy nguyên văn theo đúng thứ tự đó. Không viết lại ở đây: bản viết tắt sẽ khác
+bản gốc, và bản gốc đúng hơn.
 
-bars.py tự lấy universe qua prep.fetch_universe(), nên KHÔNG cần chạy prep.py
-trước. Xong thì kiểm tra:
+Mở lên đọc từ dòng "Bước 2. Kiểm tra chạy được".
 
-  python bars.py --info AAPL
+Lý do phải dùng bản gốc chứ không phải một danh sách lệnh ngắn: mục 2 có
+BƯỚC 4 — đối chiếu adv20/prev_close giữa bảng `base` hiện tại và bản dựng
+--from-bars — mà bản viết tắt đầu tiên của tôi đã bỏ sót. Bước đó tồn tại vì kho
+nến thiếu ngày làm SAI ÂM THẦM mọi thứ dựng trên baseline, không có gì báo lỗi.
+Bỏ nó thì backtest ở việc D chạy trên số rác và bạn sẽ tin vào kết quả rác.
 
-Đủ cho backtest rồi. Muốn tab và bot live có số thì chạy thêm:
+Chỉ thêm một điều mục 2 chưa nói: sau bước 5, đẩy lên web để tab hết "table
+missing":
 
-  python prep.py
-  python structure.py --build
-  python setups.py --build
   python push.py --all
+
+Xong bước 5, tab sẽ có bars/struct/candidates và bảng "lý do bị loại".
 
 
 --- VIỆC D. Backtest — TRÊN VM ---
 
-backtest.py đã viết xong (Phase 9.7), không phải làm gì mới. Nó chỉ cần kho nền,
-không cần bảng struct hay candidates.
+Là mục 2 BƯỚC 6. Đừng dùng bản viết tắt: bước 6 có đủ năm lệnh --by và bốn điều
+phải đọc, trong đó CỘT MAE — thứ mà bản viết tắt của tôi bỏ mất, và nó quan trọng
+ngang med10. MAE trung vị -12% thì dù lãi 12% cũng không giao dịch được: đã bị
+quét cắt lỗ trước khi nó lãi.
 
-  python backtest.py                      # selftest, không cần DB
-  python backtest.py --run --limit 300    # thử nhanh trước
-  python backtest.py --run
-  python backtest.py --run --by base_len
-  python backtest.py --run --setup BO --rvol 2.5
+backtest.py đã viết xong (Phase 9.7), không phải viết gì mới. Nó chỉ cần kho nền
+ở việc C, không cần bảng struct hay candidates.
 
-CON SỐ ĐÁNG ĐỌC TRƯỚC TIÊN LÀ DÒNG `ngau nhien`. "55% thắng sau 10 phiên" vô
-nghĩa nếu bốc mù mã nào cũng thắng 54%. Nếu BO không cách mốc ngẫu nhiên một
-khoảng rõ ràng thì định nghĩa nền chưa kiếm được gì, và chỉnh ngưỡng chỉ là chỉnh
-cho vừa nhiễu — đúng cái sai mà Phase 9 đang sửa.
-
-Ba thiên lệch phải nhớ khi đọc kết quả (docstring backtest.py đã ghi):
-  - Vào lệnh ở GIÁ ĐÓNG CỬA ngày kích hoạt, còn bot alert GIỮA phiên. Thực tế
-    thường xấu hơn, vì alert giữa phiên vào giá cao hơn ở ngày đảo chiều.
-  - yfinance chỉ còn mã ĐANG SỐNG. Kết quả đẹp hơn thật, và RV bị nặng nhất —
-    đừng so win% của RV với BO như hai số cùng thang đo.
-  - rs_pct xếp hạng trong phạm vi mã được backtest, không phải cả thị trường.
+Chạy được `python backtest.py --run` mà không cần chờ bước 5 xong — nhưng PHẢI
+chờ bước 4 xong, vì kho nến thiếu ngày thì mọi con số của bước 6 là rác.
 
 
 --- VIỆC E. cron (làm sau cùng, khi A-D đã ra số) ---
