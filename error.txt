@@ -376,3 +376,18 @@ b) MỘT NGƯỜI GHI CHO MỖI KHOÁ. App ghi scanner:config và scanner:comman
    mọi khoá còn lại. Không bên nào read-modify-write khoá của bên kia, nên không
    thể mất update và không cần lock. Kết quả của command đi về trên khoá riêng
    (scanner:command_results) do VM sở hữu. Endpoint cưỡng chế việc này bằng 403.
+
+
+cd ~/scanner && source .venv/bin/activate
+python -c "import push; print('url:', bool(push.URL), '| token len:', len(push.TOKEN))"
+
+Phải ra url: True | token len: 64. Nếu token len: 0 thì .env sai cú pháp (thường là có dấu cách quanh =, hoặc dòng bị bọc trong dấu ngoặc kép).
+
+Rồi thử thật:
+
+python push.py --ping
+
+- HTTP 200 {"ok": true, "role": "writer", ...} — xong.
+- HTTP 401 — token lệch giữa .env và Cloudflare secret. Sinh lại chuỗi mới, làm lại bước 2 và 3 cùng lúc.
+- HTTP 503 — thiếu binding D1, xem wrangler.toml.
+- HTTP 404 — deploy sai chỗ, functions/ chưa lên. Deploy lại từ apps/desktop.
