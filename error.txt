@@ -548,3 +548,28 @@ Xem "Bước C. cron" ở mục trên. Chưa cài cron thì tab chỉ có snapsh
 tay gần nhất — không sai, chỉ là cũ, và cảnh báo `stale` sẽ nói đúng chuyện đó.
 
 Sau khi tab lên số, việc tiếp theo là backtest (mục 2 bước 6), không phải bước 4 — như error.txt đã ghi: chưa có số backtest thì không có gì để ngắm khi chỉnh ngưỡng.
+
+[plugin builtin:vite-reporter] 
+(!) Some chunks are larger than 600 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+
+-rw-rw-r-- 1 ubuntu ubuntu 626688 Sep 14 22:06 /home/ubuntu/scanner/state/baseline.db
+(.venv) ubuntu@scanner:~/scanner$ sqlite3 ~/scanner/state/baseline.db ".tables"
+alert_msg  alerts     base       kv         meta       outcome    watch    
+(.venv) ubuntu@scanner:~/scanner$ systemctl cat scanner --no-pager | grep -iE "workingdirectory|execstart"
+WorkingDirectory=/home/ubuntu/scanner
+ExecStart=/home/ubuntu/scanner/.venv/bin/python -u main.py
+(.venv) ubuntu@scanner:~/scanner$ systemctl status scanner --no-pager | head -15
+● scanner.service - Stock anomaly scanner
+     Loaded: loaded (/etc/systemd/system/scanner.service; enabled; preset: enabled)
+     Active: active (running) since Mon 2026-09-14 22:06:42 CEST; 14min ago
+   Main PID: 95600 (python)
+      Tasks: 4 (limit: 6964)
+     Memory: 74.8M (peak: 74.8M)
+        CPU: 3.511s
+     CGroup: /system.slice/scanner.service
+             └─95600 /home/ubuntu/scanner/.venv/bin/python -u main.py
+
+Sep 14 22:06:42 scanner systemd[1]: Started scanner.service - Stock anomaly scanner.
