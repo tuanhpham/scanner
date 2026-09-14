@@ -378,16 +378,53 @@ b) MỘT NGƯỜI GHI CHO MỖI KHOÁ. App ghi scanner:config và scanner:comman
    (scanner:command_results) do VM sở hữu. Endpoint cưỡng chế việc này bằng 403.
 
 
-cd ~/scanner && source .venv/bin/activate
-python -c "import push; print('url:', bool(push.URL), '| token len:', len(push.TOKEN))"
+1. Bảng D1 — làm trên máy Windows này
 
-Phải ra url: True | token len: 64. Nếu token len: 0 thì .env sai cú pháp (thường là có dấu cách quanh =, hoặc dòng bị bọc trong dấu ngoặc kép).
+/ping có đếm SELECT COUNT(*) FROM scanner_kv, nên nếu bảng chưa có thì ping ra 503 chứ không phải 200. Chạy cho chắc, schema.sql toàn IF NOT EXISTS nên không đụng gì tới dữ liệu portfolio đang có:
 
-Rồi thử thật:
+cd "C:/Users/PHAMT/OneDrive - Allianz/Documents/Github/lux-lookthrough/screener-ts/apps/desktop"
+npx wrangler d1 execute screener-sync --file=./schema.sql --remote
+
+2. Token mới — trên VM
+
+cd ~/scanner
+git pull
+sed -i '/^SCANNER_TOKEN=/d' .env
+TOK=$(openssl rand -hex 32); echo "SCANNER_TOKEN=$TOK" >> .env; echo "$TOK"
+
+sed xoá đúng dòng cũ, >> giữ nguyên TG_TOKEN / ALPACA_SECRET / SEC_UA. Đừng dùng >.
+
+3. Dán token vào Cloudflare — máy Windows
+
+npx wrangler pages secret put SCANNER_TOKEN --project-name the-professional
+
+Dán 64 ký tự, không kèm dấu xuống dòng. Function .trim() header nhận vào nhưng không trim secret nó lưu — một \n lạc vào là 401 vĩnh viễn mà phía VM trông như không có gì sai.
+
+Nếu sau bước này ping vẫn 401, deploy lại (secret của Pages có thể chỉ ăn từ deployment kế tiếp):
+
+cd ../.. && npm run build --workspace @screener/core && npm run build --workspace @screener/desktop
+cd apps/desktop && npx wrangler pages deploy dist --project-name the-professional
+
+4. Ping — trên VM
 
 python push.py --ping
 
-- HTTP 200 {"ok": true, "role": "writer", ...} — xong.
-- HTTP 401 — token lệch giữa .env và Cloudflare secret. Sinh lại chuỗi mới, làm lại bước 2 và 3 cùng lúc.
-- HTTP 503 — thiếu binding D1, xem wrangler.toml.
-- HTTP 404 — deploy sai chỗ, functions/ chưa lên. Deploy lại từ apps/desktop.
+Mong đợi HTTP 200 {"ok":true,"role":"writer","keys":0,...}. Đọc kết quả thế này:
+
+- 200 — xong, đi tiếp
+- 401 — token lệch, quay lại bước 3
+- 503 — bảng chưa có, quay lại bước 1
+- 403 — bản push.py chưa được pull về
+
+5. Restart bot
+
+main.py cũng đổi (nó ghi dòng beat), nên git pull không đủ:
+
+sudo systemctl restart scanner
+python push.py --all        # đẩy phát đầu tiên, đừng chờ cron
+
+6. Mở tab Scanner trên web
+
+Cần đã nhập access code (tab dùng x-sync-code để đọc). Nếu tab hiện warn "VM chưa đẩy lần nào" thì quay về bước 5.
+
+Sau khi tab lên số, việc tiếp theo là backtest (mục 2 bước 6), không phải bước 4 — như error.txt đã ghi: chưa có số backtest thì không có gì để ngắm khi chỉnh ngưỡng.
