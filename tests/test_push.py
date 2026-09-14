@@ -90,6 +90,57 @@ def test_none_thi_bo_qua():
     assert ph.put("scanner:candidates", None) == "skip"
 
 
+def test_body_khong_phai_json_van_doc_duoc():
+    """403 tra ve trang HTML tung bi bien thanh `{}` -> "HTTP 403 {}", tuc la xoa
+    sach cau tra loi ngay trong thong bao loi. Function LUON tra JSON, nen body
+    khong phai JSON = thu chan nam TRUOC function, va body la bang chung duy nhat."""
+    m = ph._snip("<!DOCTYPE html><html>  Sorry, you have been blocked  </html>")
+    assert "HTML" in m and "blocked" in m
+    assert "\n" not in m                      # mot dong, de vao log cron
+    assert ph._snip("") == "body rong"
+    assert "text" in ph._snip("khong phai html")
+    assert len(ph._snip("x" * 9999)) < 300     # khong nem ca trang vao log
+
+
+def test_user_agent_duoc_gui():
+    """urllib khong dat User-Agent thi gui "Python-urllib/3.x", va Bot Fight Mode
+    cua Cloudflare (ban free cung co) tra 403 HTML cho dung chuoi do - TRUOC khi
+    request cham tay function. Token dung, deploy dung, van 403."""
+    import urllib.request
+
+    seen = {}
+
+    class _Fake:
+        status = 200
+
+        def read(self):
+            return b'{"ok": true}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def _fake_urlopen(req, timeout=None):
+        seen["ua"] = req.get_header("User-agent")
+        seen["tok"] = req.get_header("X-scanner-token")
+        return _Fake()
+
+    old_open, old = urllib.request.urlopen, (ph.URL, ph.TOKEN)
+    try:
+        urllib.request.urlopen = _fake_urlopen
+        ph.URL, ph.TOKEN = "https://x.invalid/api/scanner", "abc"
+        assert ph._req("GET", "ping") == (200, {"ok": True})
+    finally:
+        urllib.request.urlopen = old_open
+        ph.URL, ph.TOKEN = old
+
+    assert seen["ua"] == ph.UA
+    assert "urllib" not in (seen["ua"] or "").lower()
+    assert seen["tok"] == "abc"
+
+
 # ── 2. DB chi doc ───────────────────────────────────────────────────────────
 def test_db_mo_che_do_chi_doc():
     with tempfile.TemporaryDirectory() as d:

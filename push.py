@@ -60,6 +60,11 @@ TOKEN = os.getenv("SCANNER_TOKEN", "").strip()
 
 TIMEOUT = 15
 TRIES = 3
+# User-Agent that ai cung phai co. urllib khong dat thi gui "Python-urllib/3.x",
+# va bot protection cua Cloudflare (Bot Fight Mode, ban free cung co) tra 403 cho
+# dung chuoi do - 403 bang HTML, TRUOC khi request cham tay function. Trieu chung
+# rat kho doan: token dung, deploy dung, van 403.
+UA = "scanner-push/1.0 (+https://github.com/tuanhpham/scanner)"
 MAX_BYTES = 500_000     # phia function chan o 512_000; chan som de loi ro rang
 TOP_N = 120             # so candidate moi setup day len - du de xem, khong phinh
 KEEP_DAYS = 10          # so ngay alert giu tren cloud
@@ -77,6 +82,20 @@ def ready() -> bool:
     return bool(URL and TOKEN)
 
 
+def _snip(raw: str, n: int = 220) -> str:
+    """Body khong phai JSON -> mot dong ngan doc duoc.
+
+    Ly do co ham nay: mot loi 403 tra ve trang HTML cua Cloudflare tung bi bien
+    thanh `{}` roi in ra "HTTP 403 {}", tuc la XOA sach cau tra loi ngay trong
+    thong bao loi. Function nay LUON tra JSON co khoa `error`, nen body khong
+    phai JSON = thu chan nam TRUOC function (Cloudflare Access, WAF, bot
+    protection), va noi dung body la thu duy nhat noi ra dieu do.
+    """
+    one = " ".join(raw.split())
+    kind = "HTML" if one[:1] == "<" else "text"
+    return f"khong phai JSON ({kind}): {one[:n]}" if one else "body rong"
+
+
 def _req(method: str, path: str, body: dict | None = None) -> tuple[int, dict]:
     """Mot cuoc goi. Tra (status, json). Khong nem ra ngoai: loi mang tra (0, ...).
 
@@ -86,17 +105,26 @@ def _req(method: str, path: str, body: dict | None = None) -> tuple[int, dict]:
     data = json.dumps(body).encode() if body is not None else None
     r = urllib.request.Request(f"{URL}/{path.lstrip('/')}", data=data, method=method)
     r.add_header("X-Scanner-Token", TOKEN)
+    r.add_header("User-Agent", UA)
     if data is not None:
         r.add_header("Content-Type", "application/json")
     try:
         with urllib.request.urlopen(r, timeout=TIMEOUT) as resp:
-            raw = resp.read().decode() or "{}"
-            return resp.status, json.loads(raw)
+            raw = resp.read().decode(errors="replace") or "{}"
+            try:
+                return resp.status, json.loads(raw)
+            except ValueError:
+                return resp.status, {"error": _snip(raw)}
     except urllib.error.HTTPError as e:
+        raw = ""
         try:
-            return e.code, json.loads(e.read().decode() or "{}")
+            raw = e.read().decode(errors="replace")
         except Exception:                                        # noqa: BLE001
-            return e.code, {}
+            pass
+        try:
+            return e.code, json.loads(raw or "{}")
+        except ValueError:
+            return e.code, {"error": _snip(raw)}
     except Exception as e:                                       # noqa: BLE001
         return 0, {"error": f"{type(e).__name__}: {e}"}
 
@@ -417,6 +445,22 @@ def push_all(db=DB, dry: bool = False, force: bool = False) -> dict:
     return out
 
 
+# Moi dong o day la mot lan da mat thoi gian doan. Function LUON tra JSON, nen
+# neu body "khong phai JSON" thi khong phai loi cua function.
+_PING_HINT = {
+    0: "khong ket noi duoc: sai domain, hoac VM khong ra duoc internet.",
+    401: "token lech giua .env va Cloudflare secret. Sinh chuoi moi, dat lai CA HAI ben.",
+    403: "co thu chan TRUOC function. Xem body o tren:\n"
+         "  - nhac 'Cloudflare Access' / cloudflareaccess.com -> Pages project dang bat\n"
+         "    Access policy. Tat cho production, hoac cho /api/scanner* di duong bypass.\n"
+         "  - trang 'you have been blocked' + Ray ID -> WAF / Bot Fight Mode.\n"
+         "    Them WAF custom rule: skip cho path bat dau /api/scanner.",
+    404: "deploy sai cho: `pages deploy dist` phai chay TU apps/desktop, khong phai\n"
+         "     tu goc monorepo, khong thi functions/ khong duoc ship.",
+    503: "thieu binding D1 trong wrangler.toml.",
+}
+
+
 def _cli() -> int:
     global URL, TOKEN
 
@@ -445,8 +489,14 @@ def _cli() -> int:
         return 0                        # 0, khong phai 1: chua cau hinh != loi
 
     if a.ping:
+        # In ra thu doc duoc tu .env TRUOC khi goi mang. Khong in token, chi in
+        # do dai: "token len 13" tra loi ngay cau hoi ".env co dung khong" ma
+        # khong can biet token la gi, va do la cau hoi dau tien moi lan --ping sai.
+        log(f"url  {URL or '(trong)'}")
+        log(f"token len {len(TOKEN)}" + ("" if len(TOKEN) >= 32 else "  <- ngan bat thuong"))
         st, js = call("GET", "ping")
-        log(f"HTTP {st}  {json.dumps(js)}")
+        log(f"HTTP {st}  {json.dumps(js, ensure_ascii=False)}")
+        log(_PING_HINT.get(st, "") if st != 200 else "")
         return 0 if st == 200 else 1
     if a.get:
         k = a.get if a.get.startswith("scanner:") else f"scanner:{a.get}"
