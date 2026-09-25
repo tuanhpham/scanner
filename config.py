@@ -397,6 +397,13 @@ INTRADAY = {
     "tier2_cap": 8,             # tran Tier 2 moi phien; Tier 1 KHONG cap
     "poll_sec": 60,
 
+    # Bao gia cu hon nguong nay thi KHONG canh, va ly do di vao tin nhan. Nguong
+    # phai LON hon do tre cua nguon: yfinance tre ~15 phut, nen 1200 giay nghia
+    # la "nguon dang chay binh thuong" con 25 phut la "nguon dung roi". Ha xuong
+    # 900 se lam moi bao gia binh thuong bi coi la qua cu - tuc la ca phien im
+    # lang, va im lang thi giong het mot phien khong co gi xay ra.
+    "max_quote_age_sec": 1200,
+
     # ─── VI THE DANG MO ───
     # Anh chup vi the do app lux-lookthrough day len khoa `scanner:positions`
     # moi lan luu portfolio.

@@ -32,25 +32,28 @@ nên dù có nới ngưỡng bao nhiêu bot cũng **không thể** thấy. `bars
 luỹ, để danh sách theo dõi sinh ra từ tối hôm trước thay vì từ bảng top-mover.
 Chi tiết ở mục 11, Phase 9.
 
-### Hai hệ thống trong cùng một repo
+### Ba tiến trình trong cùng một repo
 
 Đọc các mục dưới đây nhớ để ý mình đang đọc cái nào — chúng dùng chung kho nến
-và chung DB, nhưng trả lời hai câu hỏi khác nhau:
+và chung DB, nhưng trả lời những câu hỏi khác nhau:
 
-| | **Bot cảnh báo trong phiên** | **Phễu swing buổi sáng** |
-|---|---|---|
-| Tiến trình | `main.py`, chạy 24/7 | `nightly.py`, cron gọi 1 lần/ngày |
-| Nhịp | 25 giây | 1 lần lúc 08:00 ET |
-| Câu hỏi | "*ngay lúc này* có gì bất thường?" | "hôm nay được phép làm gì, và ở đâu?" |
-| Nguồn mã | screener top-mover (Alpaca + Yahoo) | 11 sector ETF → thành phần sector |
-| Nhịp giữ | phút đến giờ | ngày đến tuần |
-| Mục | 1–11 | **mục 12** |
+| | `main.py` **ĐANG BỊ THAY THẾ** | `nightly.py` | `watchd.py` **MỚI** |
+|---|---|---|---|
+| Nhịp | 25 giây, 24/7 | 1 lần lúc 08:00 ET | 60 giây, chỉ trong phiên |
+| Câu hỏi | "*ngay lúc này* có gì bất thường?" | "hôm nay được phép làm gì, và ở đâu?" | "một mốc giá đã định có bị chạm chưa?" |
+| Nguồn mã | screener top-mover (Alpaca + Yahoo) | 11 sector ETF → thành phần sector | **đúng danh sách của `nightly.py`**, không hơn |
+| Nhịp giữ | phút đến giờ | ngày đến tuần | ngày đến tuần |
+| Mục | 1–11 | **mục 12** | **mục 12.9** |
 
-Hai cái này **không thay thế nhau**. Cái trong phiên bắt cú nhảy đột ngột và
-phần lớn những gì nó bắt là small-cap giá thấp; phễu buổi sáng bắt đầu bằng một
-sàn chất lượng ($10 / $20M/phiên) nên nó không bao giờ nhìn thấy loại đó. Prompt
-2 của roadmap là bắt cái trong phiên **đọc danh sách của phễu** thay vì tự đi
-tìm — xem mục 12.7.
+`main.py` đi tìm "% tăng mạnh nhất", và cách tính đó gần như chỉ ra cổ phiếu giá
+thấp — vì trên giá thấp, một bước nhảy phần trăm là chuyện tầm thường: spread
+rộng, không có tổ chức tham gia, rủi ro gap. Đó là lý do prompt 2 tồn tại.
+
+`watchd.py` là câu trả lời: **canh, không tìm.** Nó đọc danh sách + kế hoạch lệnh
+mà `nightly.py` đã chốt từ tối qua (sau một sàn chất lượng $10 / $20M/phiên /
+$2B vốn hoá) và không bao giờ thêm một mã nào ngoài đó. `main.py` còn chạy song
+song trong tuần chuyển đổi — hai tiến trình không đụng nhau vì chỉ `main.py` gọi
+`getUpdates`.
 
 ---
 
@@ -111,6 +114,10 @@ tìm — xem mục 12.7.
    │     Nghe nút bấm → chấm điểm lại → sửa tin nhắn tại chỗ     │
    └─────────────────────────────────────────────────────────────┘
 ```
+
+Đây là luồng của `main.py` — cái đang bị thay thế. Luồng mới (`nightly.py` ghi
+danh sách + kế hoạch lệnh, `watchd.py` canh các mốc đó trong phiên) ở **mục
+12.9**.
 
 ---
 
@@ -1163,6 +1170,10 @@ Phễu swing buổi sáng (mục 12) — năm file, chạy theo thứ tự đó:
 | `holdings.py` | Stage 3: đọc `holdings/sector_holdings.csv` — thành phần sector, **chép tay, không scrape** |
 | `watchlist.py` | Cửa vào của phần **trong phiên** (mục 12.7): sàn chất lượng + cổng regime + đọc danh sách của hôm nay. Thuần stdlib — yfinance chỉ import bên trong đúng một hàm |
 | `positions.py` | Vị thế đang mở, đọc từ khoá `scanner:positions` do app lux-lookthrough đẩy lên (mục 12.8). Thiếu = **không biết**, chứ không phải "không có vị thế" |
+| `quotes.py` | Nguồn báo giá sau một **giao diện** (`Provider`): `YFProvider` thật, `FixtureProvider` cho test. Mọi báo giá mang mốc thời gian, độ trễ và cờ `vol_ok` |
+| `watch.py` | Ba luật **Tier 1** trong phiên + chống spam ghi xuống DB (mục 12.9). `evaluate()` **đo**, `decide()` **phán xét** — cùng một cách tách như `structure`/`setups` |
+| `render_watch.py` | Dựng ba tin nhắn trong phiên (mở phiên, cảnh báo, tổng kết). **Thuần hàm** |
+| `watchd.py` | Tiến trình canh phiên, **riêng biệt với `main.py`**: đọc danh sách của tối qua, hỏi giá mỗi 60s, gửi Tier 1, tự bật/tắt theo lịch phiên |
 | `render_night.py` | Dựng tin nhắn buổi sáng. **Thuần hàm** — giống `render.py`, không network, không DB |
 | `nightly.py` | Xâu các bước lại (`nightly.NAMES`), ghi bảng `night`, luôn gửi Telegram kể cả khi lỗi, trả mã thoát cho cron |
 | `holdings/sector_holdings.csv` | ~250 mã → sector. Có `as_of=` ở đầu file; quá 180 ngày thì cảnh báo |
@@ -1219,8 +1230,10 @@ không nút vẫn hơn không có alert.
 | `regime` | `regime.py` | 1 dòng/phiên: trend, vol, sma50/200, độ dốc, atr_pct. **Ghi thêm, không ghi đè** |
 | `sector_rank` | `sectors.py` | 1 dòng/(phiên, sector): hạng, điểm, ret21/63/126, ba cờ xu hướng |
 | `night` | `nightly.py` | 1 dòng/lần chạy: mã thoát, giây, nến quyết định, JSON của từng bước, cảnh báo |
+| `watch_alert` | `watch.py` | 1 dòng/(ngày, mã, luật) — **khoá chính chính là luật chống spam**: đã có dòng thì không gửi lại, kể cả sau khi restart giữa phiên. `sym=''` giữ các tin một-lần (`open`, `summary`, `src_down`) |
 
-Ba bảng dưới **giữ lịch sử** thay vì dựng lại mỗi tối như `struct`/`candidates`.
+Ba bảng `regime` / `sector_rank` / `night` **giữ lịch sử** thay vì dựng lại mỗi
+tối như `struct`/`candidates`.
 Khác biệt đó là cố ý: biểu đồ lịch sử hạng ngành trên dashboard và cột "Δ5d /
 Δ21d" đọc chính lịch sử này, nên một bảng dựng lại mỗi tối sẽ không bao giờ trả
 lời được "tuần trước sector này đứng thứ mấy". `night` thì bị cắt còn
@@ -1298,6 +1311,12 @@ thư viện, `need()` **bỏ qua cả file và thoát 0** thay vì báo lỗi �
 vẫn kiểm tra được `render.py`, `halts.py`, `news.py`, `outcome.py`,
 `events.py`, `notifier.py`, `bars.py`, `structure.py`, `setups.py`,
 `backtest.py` trước khi push, và CI chạy phần còn lại.
+
+Cả tầng trong phiên của mục 12.9 cũng chạy đầy đủ trên máy dev: `test_watch.py`,
+`test_render_watch.py`, `test_watchd.py`, `test_quotes.py`, `test_vprofile.py`.
+Đó là cố ý — `watch.py`, `quotes.py`, `vprofile.py` **thuần stdlib**, nguồn báo
+giá nằm sau một giao diện nên test dùng `FixtureProvider`, và `send` được tiêm
+vào `tick()` nên không có test nào gọi mạng hay gọi Telegram.
 
 `tests/test_bars.py`, `test_structure.py`, `test_setups.py` và
 `test_backtest.py` chạy **đầy đủ** trên máy dev vì bốn module đó chỉ dùng
@@ -2921,14 +2940,191 @@ python positions.py --show                        # đọc thật từ cloud
 python positions.py --show --from snapshot.json   # đọc từ file, không mạng
 ```
 
+### 12.9 `watchd.py` — cảnh báo Tier 1 trong phiên
+
+Đây là phần thay thế cho hệ thống "top % tăng" cũ. Nó **không đi tìm** gì cả: nó
+canh đúng các mốc giá đã được chốt từ tối qua.
+
+```
+  TỐI QUA (nightly.py, 08:00 ET)          TRONG PHIÊN (watchd.py, mỗi 60s)
+  ──────────────────────────────          ────────────────────────────────
+  regime → sectors → structure            watchlist.load()  ← danh sách + KẾ HOẠCH
+  → setups → plan → bảng `candidates`     watchlist.gate()  ← chế độ phiên
+                    │                     positions.load()  ← vị thế đang mở
+                    └────────────────────→ quotes.Provider   ← báo giá (+ độ trễ)
+                                                │
+                                          watch.evaluate()   LUẬT: có gì xảy ra
+                                                │
+                                          watch.decide()     CHỐNG SPAM: gửi được không
+                                                │
+                                          render_watch       tin nhắn tiếng Việt
+                                                │
+                                          bảng `watch_alert` ghi SAU khi gửi được
+```
+
+Hai tiến trình, **một nguồn sự thật**: `nightly.py` ghi, `watchd.py` đọc. Trong
+phiên không có con số nào được tính lại — điểm vào, cắt lỗ, mục tiêu, cỡ vị thế
+đều là số của tối qua. Đó là cả mục đích: *không ứng biến giữa phiên, chỉ thực
+hiện một quyết định đã làm từ tối hôm trước.*
+
+⚠️ **Không bao giờ thêm một mã nào ngoài danh sách.** Thêm tay thì đi qua đúng
+cửa của mục 12.7 — `INSERT INTO watch (sym, kind) VALUES ('XYZ','manual')`, và mã
+đó **vẫn phải có dòng trong `candidates`** (tức vẫn phải có kế hoạch lệnh) và vẫn
+bị sàn chất lượng ép y nguyên. Vòng lặp đọc lại danh sách mỗi 5 phút nên không
+cần restart.
+
+Vị thế đang mở được lấy báo giá **chỉ để canh cắt lỗ**, không có luật vào lệnh
+nào chạy trên chúng.
+
+#### Ba luật Tier 1 — `watch.evaluate()`
+
+| Luật | Kích khi | Không kích khi |
+|---|---|---|
+| `stop` | giá ≤ mức cắt lỗ **cao nhất** của một vị thế đang mở | mã nhập bằng EUR, chưa có stop, chưa có báo giá (→ `unchecked`, và nói ra) |
+| `trigger` | giá ≥ `trigger` **và** RVol đã chuẩn hoá ≥ 1.5× | giá **mở cửa** đã ở trên `trigger` (đó là gap, không phải "chạm điểm vào"), hoặc không tính được RVol |
+| `gap` | \|giá mở / nến quyết định − 1\| ≥ 3% | thiếu giá mở hoặc thiếu nến quyết định |
+
+"Chạm" được đo bằng **giá mở cửa của hôm nay**, không bằng vòng quét trước. Một
+biến trong RAM sẽ mất khi tiến trình chết — và mất theo đúng cái cách không ai
+thấy.
+
+#### ⚠️ RVol phải chuẩn hoá theo giờ — dùng đường cong nào, và vì sao
+
+Mẫu số là **đường cong chữ U của cả thị trường** trong `vprofile.py` (`_MIN` /
+`_FRAC`: 20 điểm mốc từ phút 0 đến phút 390, nội suy tuyến tính; nửa phiên 210
+phút được co giãn theo tỷ lệ).
+
+Lý do phải có nó: lúc 11:00 (phút 90) một mã bình thường mới chạy **~25%** khối
+lượng cả ngày. Nếu mẫu số là `adv50` thô thì `400k / 1M = 0.4` và ngưỡng 1.5
+**không bao giờ** đạt trong nửa đầu phiên — cùng con số đó chia cho kỳ vọng đúng
+giờ là **1.6×** và luật kích. Một bộ lọc không bao giờ kích thì **không báo lỗi,
+nó chỉ im lặng**. Đây là chi tiết phân biệt cảnh báo khối lượng có ích với cảnh
+báo khối lượng vô dụng.
+
+Vì sao là đường cong **thị trường** chứ không phải đường cong riêng từng mã: một
+đường riêng cần 20 phiên nến phút của từng mã, tức là một kho dữ liệu mới và một
+đường ống mới để nuôi nó. Đường thị trường sai vài phần trăm với một mã cụ thể;
+`adv50` thô sai **gấp 4 lần** lúc giữa phiên. Đường riêng từng mã là bước sau —
+đến lúc đó `vprofile._FRAC` trở thành đường **dự phòng** chứ không phải đường duy
+nhất, và mục này sẽ nói rõ mã nào đang dùng đường nào.
+
+⚠️ **Khối lượng phải là khối lượng hợp nhất (consolidated).** `adv50` trong bảng
+`base` là khối lượng của cả thị trường. Nếu nguồn báo giá chỉ trả khối lượng của
+một sàn (feed IEX miễn phí của Alpaca ≈ 2% khối lượng) thì RVol tính ra luôn
+~0.02 và ngưỡng không bao giờ kích. Nên mỗi báo giá mang cờ `vol_ok`: False nghĩa
+là **không biết** RVol, và "không biết" thì không cảnh — nhưng phải nói ra.
+
+#### Cổng regime — `watch.RULES_BY_MODE`
+
+Cùng bảng `config.PLAYBOOK` với `nightly.py`, không có bảng thứ hai.
+
+| Chế độ | `stop` | `trigger` | `gap` |
+|---|---|---|---|
+| `full` (UPTREND) | ✅ | ✅ | ✅ |
+| `revert` (RANGE) | ✅ | ✅ | ✅ |
+| `manage` (UPTREND_UNDER_STRESS) | ✅ | ❌ | chỉ mã **đang giữ** |
+| `stop_only` (DOWNTREND, hoặc **không đọc được** regime) | ✅ | ❌ | ❌ |
+
+`stop` có trong **mọi** chế độ, kể cả DOWNTREND: đó là cả điều khoản của
+`stop_only`. Không đọc được regime cũng rơi về `stop_only` — mặc định khi không
+biết là đứng ngoài.
+
+#### Chống spam — *"thà bỏ lỡ một alert hơn là nhận 40 cái"*
+
+| Ngưỡng | Giá trị | Ghi chú |
+|---|---|---|
+| mỗi mã mỗi luật | **1 lần/phiên** | do khoá chính `(d, sym, rule)` của SQLite bảo đảm, không phải một `set` trong RAM |
+| 10 phút đầu phiên | bỏ hết | giá mở cửa hay là một cái răng cưa; `stop` **không** được miễn — nếu thật đã xuyên thì 10 phút nữa vẫn xuyên |
+| nghỉ giữa hai tin cùng mã | 15 phút | **không áp dụng cho `stop`**: một cảnh báo cắt lỗ bị một cảnh báo gap của 10 phút trước chặn lại là kiểu lỗi không thể biện minh |
+| trần Tier 2 | 8/phiên | Tier 1 **không có trần** |
+| báo giá quá cũ | > 20 phút | nguồn trễ ~15 phút nên hạ xuống 15 sẽ làm mọi báo giá bình thường bị coi là quá cũ, tức là cả phiên im lặng |
+
+**Restart giữa phiên không bắn lại.** Trạng thái nằm trong bảng `watch_alert`,
+đọc lại từ DB mỗi vòng. Và ghi **sau** khi gửi được, không phải trước: một tin
+nhắn không đến mà đã ghi "đã cảnh báo" thì mất hẳn, còn gửi hai lần chỉ là một
+tin trùng.
+
+#### Im lặng phải là một lựa chọn, không bao giờ là một triệu chứng
+
+Ba trường hợp đều có **một** tin nhắn rồi im:
+
+* **DOWNTREND / danh sách rỗng** → tin mở phiên nói rõ "sau tin này sẽ im lặng
+  trừ khi một vị thế đang mở xuyên mức cắt lỗ".
+* **Nguồn báo giá chết** → sau 5 vòng liên tiếp không lấy được giá, một tin
+  `src_down`, rồi lui nhịp. Một API chết trông y hệt một phiên không có gì xảy ra
+  nếu không có tin đó.
+* **Tiến trình chết / không khởi động được** → một tin ⛔ kèm loại lỗi, rồi mã
+  thoát ≠ 0. Mã thoát chỉ đến được cron; tin nhắn đến được người.
+
+Mọi mã **không kiểm được** (báo giá cũ, thiếu `adv50`, nguồn không cho khối lượng
+hợp nhất, mở cửa đã trên điểm vào) đi vào `skip` và hiện ở tin mở phiên kèm lý do
+tiếng Việt. Một mã bị bỏ qua mà không ai biết là cách dễ nhất để một bộ lọc hỏng
+nằm im cả tháng.
+
+Mỗi cảnh báo mang **dấu mốc báo giá + độ trễ + tên nguồn** ("báo giá 15:42 ET ·
+trễ 16 phút · nguồn yf"). Nguồn miễn phí trễ ~15 phút; bot không xoá được độ trễ,
+nó chỉ nói thật về độ trễ.
+
+#### Chạy
+
+```bash
+python watchd.py --selftest                   # luật + vòng quét, không mạng
+python watchd.py --once --dry-run             # một vòng, in ra stdout
+QUOTE_SRC=fixture:q.json python watchd.py --once --dry-run   # không mạng
+python watchd.py                              # chạy thật, tự bật/tắt theo phiên
+python watch.py --show                        # các cảnh báo đã gửi hôm nay
+```
+
+Lịch phiên lấy từ `clock.SessionClock` (ngày lễ, nửa phiên, **DST cả hai phía**
+bằng `zoneinfo` — không bao giờ là một offset cố định). Ngoài phiên nó không gọi
+mạng, không gửi gì. Trên VM thì chạy bằng systemd, giống mục 5.7 nhưng **không**
+đụng vào unit của `main.py`:
+
+```ini
+# /etc/systemd/system/watchd.service
+[Unit]
+Description=Scanner intraday Tier 1 watcher
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/scanner
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONIOENCODING=utf-8
+ExecStart=/home/ubuntu/scanner/.venv/bin/python watchd.py --quiet
+Restart=always
+RestartSec=30
+StandardError=append:/home/ubuntu/scanner/state/watchd.service.log
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`--quiet` vì log của chính nó đã xoay vòng trong `state/watchd.log`; nhưng
+`StandardError` vẫn phải đi đâu đó — một traceback xảy ra **trước** khi logger
+dựng xong thì chỉ còn đường đó.
+
+`Restart=always` an toàn ở đây đúng vì bảng `watch_alert`: restart giữa phiên
+không bắn lại tin đã gửi.
+
+`watchd.py` **không** gọi `getUpdates`, nên nó chạy song song với `main.py` được —
+đó là điều kiện để bỏ `main.py` mà không có ngày nào không ai canh phiên. Ngược
+lại, hai tiến trình `main.py` cùng lúc vẫn là 409 Conflict như cũ.
+
 ### Chưa làm của prompt 2
 
-Theo thứ tự đã thống nhất: quy tắc **Tier 1** (giá chạm `trigger` kèm RVol đã
-chuẩn hoá theo giờ, phá `stop`, gap > 3% lúc mở) gắn vào `main.py` sau cổng
-regime, dùng `positions.py` cho nhánh `stop_only` và cho trần vị thế toàn sổ (xem
-cảnh báo ở **Stage 3b**); rồi **Tier 2**, và chỉ sau khi đã chạy thật một phiên.
-`"SPIKE"` đã có mặt trong bảng playbook từ trước chính là để chuyện đó không sinh
-ra một bảng thứ hai.
+* **Tier 2** (tiếp cận vùng trong 0.5×ATR, RVol > 2.5 kèm giá > VWAP, đảo chiều ở
+  hỗ trợ đã định) — cơ chế trần 8 tin/phiên đã có và đã được test, chỉ chưa có
+  luật nào. Theo đúng thứ tự đã thống nhất: **chạy thật một phiên với Tier 1
+  trước.**
+* Đường cong khối lượng **riêng từng mã** (20 phiên gần nhất) — xem lý do ở trên.
+* `--replay [ngày]` — `quotes.FixtureProvider` đã là một nửa của nó.
+* Dashboard: bảng danh sách đang canh, log cảnh báo hôm nay, thêm/bớt mã bằng tay
+  (sàn chất lượng phải kiểm ở **phía server**), sức khoẻ tiến trình.
+* Bỏ `universe_live.py` / `scorer.py` khỏi đường chạy mặc định, sau một tuần chạy
+  song song.
 
 ---
 

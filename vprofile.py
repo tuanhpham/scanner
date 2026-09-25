@@ -1,17 +1,37 @@
-"""vprofile.py - Duong cong khoi luong noi phien (U-shape) de tinh RVOL."""
+"""vprofile.py - Duong cong khoi luong noi phien (U-shape) de tinh RVOL.
+
+THUAN STDLIB, VA DO LA CO Y. File nay la MAU SO cua moi con so RVol trong ca
+repo - ca scorer.py cu va ca canh bao Tier 1 trong phien. Truoc day no import
+numpy chi de goi np.interp, va he qua la test_vprofile.py bi bo qua tren may
+dev (khong cai duoc numpy): tuc la thu quan trong nhat khong duoc kiem o dung
+cho minh sua no. `_interp()` duoi day lam dung viec np.interp lam voi mot mang
+x tang dan, khong hon.
+"""
 from __future__ import annotations
 
-import numpy as np
+from bisect import bisect_right
 
 # (phut ke tu mo cua, ty le % khoi luong ca ngay da giao dich)
-_MIN = np.array([0, 5, 10, 15, 30, 45, 60, 90, 120, 150, 180,
-                 210, 240, 270, 300, 330, 350, 370, 380, 390], dtype=float)
-_FRAC = np.array([0.000, 0.035, 0.055, 0.072, 0.125, 0.163, 0.196, 0.253,
-                  0.303, 0.350, 0.395, 0.440, 0.487, 0.540, 0.600, 0.675,
-                  0.735, 0.830, 0.895, 1.000], dtype=float)
+_MIN = (0, 5, 10, 15, 30, 45, 60, 90, 120, 150, 180,
+        210, 240, 270, 300, 330, 350, 370, 380, 390)
+_FRAC = (0.000, 0.035, 0.055, 0.072, 0.125, 0.163, 0.196, 0.253,
+         0.303, 0.350, 0.395, 0.440, 0.487, 0.540, 0.600, 0.675,
+         0.735, 0.830, 0.895, 1.000)
 
 FLOOR = 0.012  # tranh chia cho 0 ngay sau khi mo cua / trong premarket
 FULL_SESSION = 390
+
+
+def _interp(x: float, xs=_MIN, ys=_FRAC) -> float:
+    """Noi suy tuyen tinh, kep hai dau - giong np.interp voi xs tang dan."""
+    if x <= xs[0]:
+        return ys[0]
+    if x >= xs[-1]:
+        return ys[-1]
+    i = bisect_right(xs, x)          # xs[i-1] <= x < xs[i]
+    x0, x1 = xs[i - 1], xs[i]
+    y0, y1 = ys[i - 1], ys[i]
+    return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
 
 
 def cum_frac(mso: int | float | None, session_minutes: int = FULL_SESSION) -> float:
@@ -28,7 +48,7 @@ def cum_frac(mso: int | float | None, session_minutes: int = FULL_SESSION) -> fl
         return FLOOR
     if m >= FULL_SESSION:
         return 1.0
-    return max(FLOOR, float(np.interp(m, _MIN, _FRAC)))
+    return max(FLOOR, _interp(m))
 
 
 def rvol(volume_today: float, adv20: float, mso: int | float | None,
