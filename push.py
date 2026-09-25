@@ -197,8 +197,13 @@ def put(key: str, value, force: bool = False, dry: bool = False) -> str:
     return "sent"
 
 
-def get(key: str) -> dict | None:
-    """Doc nguoc mot khoa. Dung cho scanner:config / scanner:commands (buoc 5-6)."""
+def get_full(key: str) -> dict | None:
+    """Doc nguoc mot khoa KEM dau moc thoi gian: {"value": ..., "updatedAt": ms}.
+
+    `updatedAt` la dong ho CUA CLOUDFLARE, khong phai cua nguoi ghi. Voi
+    scanner:positions dieu do quan trong: ben ghi la trinh duyet, va mot may tinh
+    chay nhanh vai phut se cho ra mot dau moc o tuong lai.
+    """
     if not ready():
         return None
     st, js = call("GET", f"kv/{key}")
@@ -207,7 +212,13 @@ def get(key: str) -> dict | None:
     if st != 200:
         log(f"push: get {key} -> HTTP {st} {js.get('error', '')}")
         return None
-    return js.get("value")
+    return js
+
+
+def get(key: str) -> dict | None:
+    """Doc nguoc mot khoa. Dung cho scanner:config / scanner:commands (buoc 5-6)."""
+    js = get_full(key)
+    return None if js is None else js.get("value")
 
 
 # ───────────────────────── doc DB ─────────────────────────

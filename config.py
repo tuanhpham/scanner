@@ -399,10 +399,16 @@ INTRADAY = {
 
     # ─── VI THE DANG MO ───
     # Anh chup vi the do app lux-lookthrough day len khoa `scanner:positions`
-    # moi lan luu portfolio. Cu hon nguong nay thi noi ro trong tin nhan mo
-    # phien. 30 gio chu khong 24: luu luc chieu hom truoc van con dung sang hom
-    # sau, va cuoi tuan thi khong co phien nao de canh stop.
-    "pos_max_age_h": 30,
+    # moi lan luu portfolio.
+    #
+    # ⚠️ DAY LA NGUONG DE NOI RA, KHONG PHAI HAN SU DUNG. Khoa do duoc ghi theo
+    # SU KIEN (luc luu portfolio) chu khong dinh ky: khong giao dich mot tuan
+    # thi anh chup cu mot tuan va van dung tung chu. Vuot nguong nay thi
+    # positions.py dat `old=True` va tin nhan mo phien noi "app cap nhat lan
+    # cuoi X ngay truoc" - no KHONG BAO GIO bo du lieu di. Neu bo thi moi sang
+    # thu Hai canh cat lo se tat, tuc la dung o cho nguy hiem nhat.
+    # 30 gio chu khong 24: luu luc chieu hom truoc van con la "moi" sang hom sau.
+    "pos_stale_h": 30,
 }
 
 

@@ -1162,6 +1162,7 @@ Phễu swing buổi sáng (mục 12) — năm file, chạy theo thứ tự đó:
 | `sectors.py` | Stage 2: xếp hạng 11 sector SPDR → bảng `sector_rank` (có lịch sử, `--backfill`) |
 | `holdings.py` | Stage 3: đọc `holdings/sector_holdings.csv` — thành phần sector, **chép tay, không scrape** |
 | `watchlist.py` | Cửa vào của phần **trong phiên** (mục 12.7): sàn chất lượng + cổng regime + đọc danh sách của hôm nay. Thuần stdlib — yfinance chỉ import bên trong đúng một hàm |
+| `positions.py` | Vị thế đang mở, đọc từ khoá `scanner:positions` do app lux-lookthrough đẩy lên (mục 12.8). Thiếu = **không biết**, chứ không phải "không có vị thế" |
 | `render_night.py` | Dựng tin nhắn buổi sáng. **Thuần hàm** — giống `render.py`, không network, không DB |
 | `nightly.py` | Xâu các bước lại (`nightly.NAMES`), ghi bảng `night`, luôn gửi Telegram kể cả khi lỗi, trả mã thoát cho cron |
 | `holdings/sector_holdings.csv` | ~250 mã → sector. Có `as_of=` ở đầu file; quá 180 ngày thì cảnh báo |
@@ -2852,14 +2853,82 @@ python watchlist.py --mktcap               # làm mới cache vốn hóa (có g�
 python watchlist.py                        # selftest, không mạng, không DB
 ```
 
-#### Chưa làm
+### 12.8 `positions.py` — vị thế đang mở, và vì sao `stop_only` cần nó
 
-Còn lại của prompt 2, theo thứ tự đã thống nhất: quy tắc **Tier 1** (giá chạm
-`trigger` kèm RVol đã chuẩn hoá theo giờ, phá `stop`, gap > 3% lúc mở) gắn vào
-`main.py` sau cổng regime; cầu `scanner:positions` để biết vị thế đang mở (cần
-cho `stop_only` và cho trần vị thế toàn sổ — xem cảnh báo ở **Stage 3b**); rồi
-**Tier 2**, và chỉ sau khi đã chạy thật một phiên. `"SPIKE"` đã có mặt trong bảng
-playbook từ trước chính là để chuyện đó không sinh ra một bảng thứ hai.
+Cổng regime có chế độ `stop_only`: DOWNTREND thì **im lặng toàn bộ** canh báo mua,
+chỉ còn canh cắt lỗ cho vị thế đang mở. Chế độ đó vô nghĩa nếu scanner không biết
+mình đang giữ gì — nó sẽ "im lặng toàn bộ" thật, tức là đúng vào những ngày một
+mức cắt lỗ quan trọng nhất.
+
+Nguồn sự thật là sổ trong app **lux-lookthrough**, không phải một file thứ hai ở
+đây. Mỗi lần lưu portfolio, app dựng một **bản rút gọn** và PUT lên
+`scanner:positions`; VM đọc về.
+
+```
+lux-lookthrough                                 scanner (VM)
+saveAccounts()
+  └─ buildPositionsDigest()   ← core, có vitest
+       └─ publishPositions()  → PUT /api/scanner/kv/scanner:positions
+                                      └─ positions.load() → parse()
+```
+
+**Cái gì đi qua:** mã, số cổ phiếu đang mở, giá vốn bình quân, **mọi** mức cắt lỗ,
+tiền tệ đã nhập giá, tên tài khoản. **Cái gì không:** tiền, vốn, lãi/lỗ, id tài
+khoản, id lô, ngày mua. Lý do phải kể ra: endpoint `/api/scanner` chỉ chặn
+**ghi** theo vai, còn **GET thì cả hai vai đều đọc được** (VM buộc phải đọc được
+`scanner:config`). Nên mọi thứ app đăng lên đây là thứ ai giữ token của VM cũng
+đọc được, và bản rút gọn này là chỗ duy nhất được phép hẹp lại như vậy.
+
+> ⚠️ **Thiếu không phải là "không có vị thế".** Chưa cấu hình push, mạng chết,
+> khoá chưa tồn tại, JSON lạ, `rows` không phải list → `known=False`. Hai trường
+> hợp "không canh gì cả" trông giống nhau từ bên ngoài nhưng một cái hợp lệ và một
+> cái là hệ thống đang hỏng, nên `note` của chúng **không bao giờ** được giống
+> nhau. `n=0` với một bản đọc được vẫn là một **câu trả lời**: "không có vị thế
+> nào đang mở".
+
+> ⚠️ **Cũ không phải là sai.** Khoá này được ghi theo **sự kiện** (lúc lưu
+> portfolio), không định kỳ: không giao dịch một tuần thì ảnh chụp cũ một tuần và
+> vẫn đúng từng chữ. Nên `pos_stale_h` (30 giờ) chỉ bật `old=True` để tin nhắn mở
+> phiên **nói ra** — nó không bao giờ bỏ dữ liệu đi. Nếu bỏ thì mọi sáng thứ Hai
+> canh cắt lỗ sẽ tắt, đúng ở chỗ nguy hiểm nhất.
+
+Tuổi tính theo **`updatedAt` của Cloudflare**, không theo `ts` mà trình duyệt ghi:
+một máy chạy lệch vài phút sẽ cho ra "luôn còn mới" hoặc một tuổi âm. Không có
+`updatedAt` thì hiện `ts` để xem, nhưng **không đoán tuổi** từ nó.
+
+#### Ba cạm bẫy ở phía sổ — và cách xử lý
+
+| Cạm bẫy | Vì sao nó âm thầm | Xử lý |
+|---|---|---|
+| Nhiều lô cùng một mã, mỗi lô một stop | Bảng portfolio hiện stop của lô **cũ nhất** làm số đại diện. Giá giảm thì xuyên mức **cao nhất** trước → lấy số của bảng là canh muộn, hoặc không bao giờ canh | Đẩy **mọi** mức, `stops` xếp giảm dần; `stop_hit()` trả mức cao nhất bị xuyên |
+| Stop đặt bằng **lệnh chờ** `STOP_LOSS` | Không nằm trong `lot.stop`, mà với người dùng thì hai thứ đó là một thứ | Gộp lệnh chờ `pending` vào, chỉ cho mã còn mở; `TAKE_PROFIT` thì **không** |
+| Giá nhập bằng **EUR**, báo giá bằng **USD** | `metrics.ts` ở phía app đang so trực tiếp hai thứ đó. Sao y sang đây sẽ cho ra alert ở mức lệch ~12% mà lại còn tự tin | **Không quy đổi, không đoán tỷ giá.** Mã đó vào `unchecked()` kèm lý do, và phải xuất hiện ở tin nhắn mở phiên |
+
+Điều cuối cùng là chỗ khác biệt giữa **đứng ngoài** và **im lặng**: một mã scanner
+không canh được thì mình phải tự canh, và mình chỉ tự canh được nếu **biết**.
+Thiếu `cur` cũng vào đó luôn — "không biết" thì không phải là USD.
+
+```python
+d = positions.load()                    # {known, n, rows, warn, ts, age_h, old, note}
+positions.watched(d)                    # các mã canh được stop thật
+positions.unchecked(d)                  # [(mã, lý do tiếng Việt)] → tin nhắn mở phiên
+positions.stop_hit(d["rows"]["NVDA"], px)   # {hit, n, ok, why}; bằng nhau TÍNH LÀ xuyên
+```
+
+```bash
+python positions.py                              # selftest, không mạng
+python positions.py --show                        # đọc thật từ cloud
+python positions.py --show --from snapshot.json   # đọc từ file, không mạng
+```
+
+### Chưa làm của prompt 2
+
+Theo thứ tự đã thống nhất: quy tắc **Tier 1** (giá chạm `trigger` kèm RVol đã
+chuẩn hoá theo giờ, phá `stop`, gap > 3% lúc mở) gắn vào `main.py` sau cổng
+regime, dùng `positions.py` cho nhánh `stop_only` và cho trần vị thế toàn sổ (xem
+cảnh báo ở **Stage 3b**); rồi **Tier 2**, và chỉ sau khi đã chạy thật một phiên.
+`"SPIKE"` đã có mặt trong bảng playbook từ trước chính là để chuyện đó không sinh
+ra một bảng thứ hai.
 
 ---
 
