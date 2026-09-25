@@ -304,6 +304,19 @@ async def run(args, lg: logging.Logger) -> int:
     async def send(txt: str, loud: bool = False) -> bool:
         return await tg_send(txt, loud, args.dry, lg)
 
+    async def nap(sec: float) -> bool:
+        """Ngu giua hai vong. Tra False khi --once: khong con vong sau de cho.
+
+        Cho roi moi kiem --once la mot cai bay: `--once --dry-run` in ra ket qua
+        trong mot giay roi treo them 60s (ngoai phien) hoac 240s (AFTERHOURS)
+        truoc khi thoat, nen no giong het mot tien trinh chet dung. Ngu phai la
+        viec dau tien bo qua khi biet minh khong chay vong nua.
+        """
+        if args.once:
+            return False
+        await asyncio.sleep(sec)
+        return True
+
     ctx: dict = {"day": "", "rows": [], "gate": {}, "pos": None, "warn": []}
     fail = 0
     lg.info(f"watchd: bat dau · nguon {prov.name} · "
@@ -349,20 +362,21 @@ async def run(args, lg: logging.Logger) -> int:
                 else:
                     fail = 0
                 # Lui nhip khi that bai lien tiep, toi da 4x.
-                await asyncio.sleep(poll * min(4, 1 + fail))
+                if not await nap(poll * min(4, 1 + fail)):
+                    return 0
             elif state == "AFTERHOURS":
                 if watch.once(c, d, "summary", now):
                     await send(render_watch.render_summary(
                         view(ctx, prov, sess, watch.today_rows(c, d), url,
                              args.dry)))
                     lg.info("da gui tong ket phien")
-                await asyncio.sleep(240)
+                if not await nap(240):
+                    return 0
             else:
                 # Ngoai phien: khong lay gia, khong gui gi. Ngu ngan de bat kip
                 # luc mo cua (va de Ctrl-C khong phai cho 10 phut).
-                await asyncio.sleep(60)
-            if args.once:
-                return 0
+                if not await nap(60):
+                    return 0
     except (KeyboardInterrupt, asyncio.CancelledError):
         lg.info("watchd: dung theo yeu cau")
         return 0

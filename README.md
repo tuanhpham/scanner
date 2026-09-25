@@ -3088,7 +3088,7 @@ nó chỉ nói thật về độ trễ.
 
 ```bash
 python watchd.py --selftest                   # luật + vòng quét, không mạng
-python watchd.py --once --dry-run             # một vòng, in ra stdout
+python watchd.py --once --dry-run             # một vòng rồi THOÁT NGAY
 QUOTE_SRC=fixture:q.json python watchd.py --once --dry-run   # không mạng
 python watchd.py                              # chạy thật, tự bật/tắt theo phiên
 python watch.py --show                        # các cảnh báo đã gửi hôm nay
@@ -3120,6 +3120,20 @@ StandardError=append:/home/ubuntu/scanner/state/watchd.service.log
 [Install]
 WantedBy=multi-user.target
 ```
+
+Bật lên — **`watchd` là unit thứ hai, không thay `scanner`**; hai tiến trình
+chạy song song:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now watchd      # enable = tự bật khi boot
+sudo systemctl status watchd            # phải thấy "active (running)"
+tail -f ~/scanner/state/watchd.log      # Ctrl+C để thoát xem log
+journalctl -u watchd -n 50              # crash trước khi logger dựng xong
+```
+
+Trong `state/watchd.log` phải thấy dòng `watchd: bat dau · nguon yf · gui that`.
+Ngoài phiên thì sau đó nó im — đúng thiết kế, không phải treo.
 
 `--quiet` vì log của chính nó đã xoay vòng trong `state/watchd.log`; nhưng
 `StandardError` vẫn phải đi đâu đó — một traceback xảy ra **trước** khi logger
