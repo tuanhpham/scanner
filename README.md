@@ -1318,6 +1318,24 @@ Cả tầng trong phiên của mục 12.9 cũng chạy đầy đủ trên máy d
 giá nằm sau một giao diện nên test dùng `FixtureProvider`, và `send` được tiêm
 vào `tick()` nên không có test nào gọi mạng hay gọi Telegram.
 
+**Cập nhật 2026-09-25:** máy dev hiện **cài được đủ** `requirements.txt`
+(`pip` đi qua được firewall; chỉ `wrangler login` là không). Nghĩa là
+`python -m pytest -q -rs` ở máy tái hiện **đúng** job `test` của CI — đừng đợi
+CI để biết mình làm đỏ. Nhưng nó mở ra một kiểu lỗi mới: một test **gọi mạng
+thật** trước đây vô hình (thiếu thư viện → `need()` bỏ qua cả file), giờ nó
+chạy, và một test xanh nhờ mạng là một test sẽ đỏ ngẫu nhiên vào ngày mạng hỏng.
+Cách phát hiện là **thời gian**, không phải kết quả:
+
+```bash
+python -m pytest -q --durations=10      # test thuần logic phải ~ms, không phải giây
+```
+
+Hai test đã bị bắt bằng đúng cách này (2.06s và 3.21s → cả hai giờ dưới 0.1s):
+`test_quotes.py` thay `quotes._rows_from_yf`, và `watchlist.refresh_mktcap()`
+được thêm tham số `fetch=None` làm **mối khâu** để test tiêm nguồn giả vào.
+Không có mối khâu đó thì chính test kiểm *"thất bại không được đóng dấu là đã
+kiểm"* lại đi ra mạng thật.
+
 `tests/test_bars.py`, `test_structure.py`, `test_setups.py` và
 `test_backtest.py` chạy **đầy đủ** trên máy dev vì bốn module đó chỉ dùng
 `sqlite3` — kể cả phần đọc
@@ -1602,6 +1620,7 @@ CATALYST.
 | `[yahoo] trang 0 loi` | Yahoo rate-limit (~1 req/60s) | `UNIVERSE_SEC = 60` đã tính đến việc này |
 | `[!] SEC_UA chua dat dung dinh dang` | `SEC_UA` thiếu `@` | Điền `Ten That email@domain.com` |
 | `INTERNALERROR> SystemExit` + `no tests ran` | Có file `test_*.py` **ngoài** `tests/` — pytest import nó lúc collect và code cấp module chạy thật | Đổi tên thành `check_*.py`; `pytest.ini` đã chặn bằng `testpaths = tests` |
+| CI đỏ ở `test_ensure_cols_chay_lai_khong_lam_gi`: `ensure_cols()` trả về `['mktcap','mktcap_ts']` | Cột được thêm vào `prep.ADD_COLS` mà **quên `prep.DDL`** → một DB dựng từ đầu vẫn thiếu cột, nên lần chạy đầu của mọi máy mới đều là một lần migrate | Khai báo cột ở **cả hai** chỗ, cùng kiểu. `test_moi_cot_trong_ADD_COLS_deu_da_co_trong_DDL` giữ hai bản không lệch nữa |
 
 **Lưu ý:** script thử Telegram tên là `scripts/check_tg.py`, **không** phải
 `test_tg.py`. Tên cũ trùng mẫu tên của pytest nên nó bị import lúc collect,

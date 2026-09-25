@@ -64,19 +64,37 @@ def test_khung_rong_van_lieu_ke_du_ma_da_hoi():
 
 
 def test_loi_mang_thanh_mot_dong_err_moi_ma_chu_khong_phai_khung_rong():
-    """YFProvider khong co yfinance -> moi ma mang ly do cua rieng no. Mot khung
-    rong se duoc tang tren doc thanh 'khong ma nao dat dieu kien'."""
-    f = q.YFProvider().fetch(["NVDA", "AAPL"])
+    """Mot khung rong se duoc tang tren doc thanh "khong ma nao dat dieu kien".
+
+    Thay `_rows_from_yf` chu khong goi that: tren CI co yfinance, va mot test goi
+    mang la mot test that bai vi mang chu khong vi code - README muc 8.
+    """
+    goc = q._rows_from_yf
+    q._rows_from_yf = lambda syms: ([], "mang hong")
+    try:
+        f = q.YFProvider().fetch(["NVDA", "AAPL"])
+    finally:
+        q._rows_from_yf = goc
     assert sorted(f) == ["AAPL", "NVDA"]
     for s in f:
-        # Tren VM co yfinance thi loi se la loi mang; ca hai deu phai co `err`
-        # HOAC co du lieu that. Khong duoc bien mat.
-        assert f[s]["err"] or f[s]["px"] is not None
+        assert f[s]["err"] == "mang hong" and f[s]["px"] is None
+        assert f[s]["vol_ok"] is False, "khong co du lieu thi khong duoc tinh RVol"
 
 
-def test_khong_ma_nao_thi_khong_goi_nguon():
-    assert q.YFProvider().fetch([]) == {}
-    assert q.YFProvider().fetch(["", None]) == {}
+def test_yfprovider_khong_goi_mang_khi_khong_co_ma_nao():
+    """Mot vong quet voi danh sach rong khong duoc phep ra mang: ngoai phien va
+    trong che do stop_only khong co vi the nao, do la truong hop binh thuong."""
+    goc = q._rows_from_yf
+
+    def no(syms):
+        raise AssertionError("khong duoc goi nguon khi khong co ma nao")
+
+    q._rows_from_yf = no
+    try:
+        assert q.YFProvider().fetch([]) == {}
+        assert q.YFProvider().fetch(["", None]) == {}
+    finally:
+        q._rows_from_yf = goc
 
 
 # ────────────── 2. do moi ──────────────

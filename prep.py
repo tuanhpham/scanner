@@ -191,7 +191,7 @@ DDL = """
 CREATE TABLE IF NOT EXISTS base (
   sym TEXT PRIMARY KEY, adv20 REAL, atr14 REAL, prev_close REAL,
   float_sh REAL, float_ts TEXT, cik TEXT, exch TEXT, is_etf INTEGER DEFAULT 0,
-  updated TEXT);
+  mktcap REAL, mktcap_ts TEXT, updated TEXT);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 CREATE INDEX IF NOT EXISTS ix_base_adv ON base(adv20);
 """
@@ -199,6 +199,11 @@ CREATE INDEX IF NOT EXISTS ix_base_adv ON base(adv20);
 # Cot them vao sau khi bang `base` da ton tai tren VM. `CREATE TABLE IF NOT
 # EXISTS` khong bao gio them cot vao bang co san, nen khong co doan migrate nay
 # thi mot DB cu se thieu cot va cau UPDATE tuong ung nem "no such column".
+#
+# ⚠️ MOI CAI TEN O DAY PHAI CO MAT TRONG `DDL` O TREN, dung kieu. ADD_COLS chi de
+# vá DB CU; mot DB dung tu dau phai co san cot do. Neu chi them vao day thi lan
+# chay dau tien cua mot may moi luon la mot lan migrate - va
+# test_ensure_cols_chay_lai_khong_lam_gi la cho no lo ra.
 #
 # Ba cot nay la ba lan phat hien khac nhau:
 #   exch      moi (san niem yet, cho cong chat luong cua phan intraday)

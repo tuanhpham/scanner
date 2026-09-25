@@ -422,7 +422,7 @@ MKTCAP_COLS = (("mktcap", "REAL"), ("mktcap_ts", "TEXT"))
 
 
 def refresh_mktcap(db=DB, syms: list[str] | None = None,
-                   ttl_days: int | None = None) -> dict:
+                   ttl_days: int | None = None, fetch=None) -> dict:
     """Lay `marketCap` tu yfinance cho cac ma trong danh sach, cache vao `base`.
 
     Chi <= 10 ma moi dem (tran cua config.LEAD), va cache TTL 7 ngay, nen day la
@@ -434,6 +434,12 @@ def refresh_mktcap(db=DB, syms: list[str] | None = None,
 
     Import yfinance BEN TRONG ham: moi thu con lai cua file nay thuan stdlib va
     phai chay duoc o may khong co yfinance.
+
+    `fetch(sym) -> von hoa | None` la mot MOI KHAU de test chay khong mang. Mac
+    dinh None nghia la dung yfinance. Khong co moi khau nay thi tren may DA cai
+    yfinance, chinh test kiem "that bai khong duoc dong dau la da kiem" se di ra
+    mang that - va mot test phu thuoc mang la mot test that bai vi mang chu khong
+    vi code.
     """
     g = config.INTRADAY
     ttl = int(g["mktcap_ttl_days"] if ttl_days is None else ttl_days)
@@ -464,19 +470,22 @@ def refresh_mktcap(db=DB, syms: list[str] | None = None,
         if not todo:
             return out
 
-        try:
-            import yfinance as yf
-        except Exception as e:                                   # noqa: BLE001
-            out["err"] = f"không import được yfinance: {type(e).__name__}"
-            return out
+        if fetch is None:
+            try:
+                import yfinance as yf
+            except Exception as e:                               # noqa: BLE001
+                out["err"] = f"không import được yfinance: {type(e).__name__}"
+                return out
+
+            def fetch(sym: str):                                 # noqa: ANN202
+                return _num(yf.Ticker(sym).get_info().get("marketCap"))
 
         now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
         for s in todo:
             out["asked"] += 1
             cap = None
             try:
-                info = yf.Ticker(s).get_info()
-                cap = _num(info.get("marketCap"))
+                cap = _num(fetch(s))
             except Exception:                                    # noqa: BLE001
                 cap = None
             if cap and cap > 0:

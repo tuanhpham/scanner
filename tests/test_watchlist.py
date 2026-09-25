@@ -12,8 +12,9 @@ Ba bat bien, xep theo do IM LANG cua loi neu no vo:
 3. KE HOACH HET HAN PHAI BI GOI TEN. Cron chet ba ngay truoc ma bot van canh
    dung dinh dang, ve mot phien khong con ton tai, la kieu loi te nhat.
 
-Thuan stdlib: khong mang, khong pandas. refresh_mktcap() chi duoc kiem o duong
-THAT BAI (may nay khong co yfinance), va do cung la duong quan trong hon.
+Thuan stdlib: khong mang, khong pandas. refresh_mktcap() nhan tham so `fetch` lam
+moi khau, nen ca duong LAY DUOC va duong THAT BAI deu duoc kiem ma khong ra mang
+- va duong that bai la duong quan trong hon (xem bat bien 1).
 """
 from __future__ import annotations
 
@@ -390,25 +391,59 @@ def test_khong_co_bang_watch_thi_khong_vo():
 
 
 # ───────────────────────── 7. von hoa ─────────────────────────
-def test_refresh_mktcap_them_cot_va_khong_nem_khi_thieu_yfinance():
-    """May nay khong co yfinance -> phai tra `err`, khong nem.
+def test_refresh_mktcap_that_bai_thi_KHONG_dong_dau_la_da_kiem():
+    """Ghi mktcap_ts khi that bai la bien "khong lay duoc" thanh "da kiem roi",
+    va TTL 7 ngay se giu cai sai do mot tuan - im lang, vi ma chi bi loai khoi
+    danh sach chu khong bao loi o dau ca.
 
-    Va quan trong hon: KHONG duoc ghi mktcap_ts khi that bai. Ghi vao la bien
-    "khong lay duoc" thanh "da kiem roi", va TTL 7 ngay se giu cai sai do mot
-    tuan.
+    `fetch` duoc tiem vao: tren may DA cai yfinance, khong tiem thi chinh test
+    nay di ra mang that (va cho 3 giay cho mot ma khong ton tai).
     """
     with tempfile.TemporaryDirectory() as d:
         p = _db(d, "UPTREND")
         _add(p, "AAA")
-        r = wl.refresh_mktcap(p, ["AAA"])
+        r = wl.refresh_mktcap(p, ["AAA"], fetch=lambda s: None)
         c = sqlite3.connect(p)
         cols = {x[1] for x in c.execute("PRAGMA table_info(base)")}
-        row = c.execute("SELECT mktcap_ts FROM base WHERE sym='AAA'").fetchone()
+        row = c.execute("SELECT mktcap, mktcap_ts FROM base WHERE sym='AAA'"
+                        ).fetchone()
         c.close()
         assert {"mktcap", "mktcap_ts"} <= cols, "phai tu them cot"
-        if r["err"]:                       # khong co yfinance: duong that bai
-            assert r["ok"] == 0 and r["asked"] == 0
-            assert row[0] is None, "that bai khong duoc dong dau la da kiem"
+        assert r["asked"] == 1 and r["ok"] == 0 and r["fail"] == 1, r
+        # Khong ghi 0 va khong xoa so cu: mot lan hong khong duoc lam mat con so
+        # da biet (ghi 0 se loai ma vinh vien vi san $2B).
+        assert row[0] == 50e9, row
+        assert row[1] is None, "that bai khong duoc dong dau la da kiem"
+
+
+def test_refresh_mktcap_nguon_nem_thi_cung_chi_la_that_bai():
+    """Mot ma sai chinh ta / vua bi go niem yet lam yfinance nem. Ca vong phai di
+    tiep: chin ma con lai khong duoc mat von hoa vi ma thu muoi."""
+    def no(s):
+        raise RuntimeError("404")
+
+    with tempfile.TemporaryDirectory() as d:
+        p = _db(d, "UPTREND")
+        _add(p, "AAA")
+        r = wl.refresh_mktcap(p, ["AAA"], fetch=no)
+        assert r["fail"] == 1 and r["ok"] == 0 and not r["err"], r
+
+
+def test_refresh_mktcap_lay_duoc_thi_ghi_va_lan_sau_dung_cache():
+    with tempfile.TemporaryDirectory() as d:
+        p = _db(d, "UPTREND")
+        _add(p, "AAA")
+        r = wl.refresh_mktcap(p, ["AAA"], fetch=lambda s: 3.4e9)
+        assert r["ok"] == 1 and r["fail"] == 0, r
+        c = sqlite3.connect(p)
+        row = c.execute("SELECT mktcap, mktcap_ts FROM base WHERE sym='AAA'"
+                        ).fetchone()
+        c.close()
+        assert row[0] == 3.4e9 and row[1], row
+        # Lan hai: con han -> khong hoi lai. `1/0` de neu no hoi thi test do,
+        # chu khong am tham hoi lai moi dem.
+        r2 = wl.refresh_mktcap(p, ["AAA"], fetch=lambda s: 1 / 0)
+        assert r2["cached"] == 1 and r2["asked"] == 0, r2
 
 
 def test_refresh_mktcap_bo_qua_ma_con_han():

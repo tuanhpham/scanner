@@ -43,6 +43,13 @@ jobs:
           python events.py         # khong doi so = _smoke()
           python notifier.py       # spool: giu tin, dung thu tu
           python push.py           # payload snapshot + DB chi doc, khong ra mang
+          # Tang trong phien (muc 12.9). Thuan stdlib la CO Y, nen chinh job
+          # KHONG THU VIEN nay moi la cho chung phai chay, khong phai job pytest.
+          python vprofile.py > /dev/null   # duong cong U: mau so cua moi RVol
+          python quotes.py         # gop nen phut -> bao gia, do tre, vol_ok
+          python watch.py          # ba luat Tier 1 + chong spam trong SQLite
+          python render_watch.py   # ba tin nhan trong phien
+          python watchd.py --selftest      # mot vong quet bang fixture
 
       - name: Test chay duoc ma khong co thu vien
         # Cac file test tu bo qua khi thieu thu vien (tests/_util.py: need()).

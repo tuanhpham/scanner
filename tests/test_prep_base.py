@@ -38,8 +38,20 @@ def test_ddl_moi_da_co_du_moi_cot_ma_code_khac_dung():
     # Danh sach nay la cac cot co code that su doc/ghi. Them cot moi vao DB ma
     # quen dong nay thi test khong bao gi - nhung quen KHAI BAO cot thi bao.
     for need in ("sym", "adv20", "atr14", "prev_close", "float_sh", "float_ts",
-                 "cik", "exch", "is_etf", "updated"):
+                 "cik", "exch", "is_etf", "mktcap", "mktcap_ts", "updated"):
         assert need in have, f"DDL thieu cot `{need}`"
+
+
+def test_moi_cot_trong_ADD_COLS_deu_da_co_trong_DDL():
+    """ADD_COLS chi de VA DB CU. Mot DB dung tu dau phai co san cac cot do.
+
+    Bay: them cot moi vao ADD_COLS ma quen DDL thi moi thu van chay - chi la lan
+    chay dau tien cua mot may moi luon la mot lan ALTER TABLE, tuc la duong
+    migrate tro thanh duong chinh va khong ai con biet DDL that su thieu gi.
+    """
+    have = cols(_db(pr.DDL))
+    thieu = [n for n, _ in pr.ADD_COLS if n not in have]
+    assert not thieu, f"DDL thieu cot {thieu} (chi khai bao o ADD_COLS)"
 
 
 def test_cau_update_cua_scorer_chay_duoc_tren_ddl_moi():
