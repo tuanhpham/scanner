@@ -32,6 +32,26 @@ nên dù có nới ngưỡng bao nhiêu bot cũng **không thể** thấy. `bars
 luỹ, để danh sách theo dõi sinh ra từ tối hôm trước thay vì từ bảng top-mover.
 Chi tiết ở mục 11, Phase 9.
 
+### Hai hệ thống trong cùng một repo
+
+Đọc các mục dưới đây nhớ để ý mình đang đọc cái nào — chúng dùng chung kho nến
+và chung DB, nhưng trả lời hai câu hỏi khác nhau:
+
+| | **Bot cảnh báo trong phiên** | **Phễu swing buổi sáng** |
+|---|---|---|
+| Tiến trình | `main.py`, chạy 24/7 | `nightly.py`, cron gọi 1 lần/ngày |
+| Nhịp | 25 giây | 1 lần lúc 08:00 ET |
+| Câu hỏi | "*ngay lúc này* có gì bất thường?" | "hôm nay được phép làm gì, và ở đâu?" |
+| Nguồn mã | screener top-mover (Alpaca + Yahoo) | 11 sector ETF → thành phần sector |
+| Nhịp giữ | phút đến giờ | ngày đến tuần |
+| Mục | 1–11 | **mục 12** |
+
+Hai cái này **không thay thế nhau**. Cái trong phiên bắt cú nhảy đột ngột và
+phần lớn những gì nó bắt là small-cap giá thấp; phễu buổi sáng bắt đầu bằng một
+sàn chất lượng ($10 / $20M/phiên) nên nó không bao giờ nhìn thấy loại đó. Prompt
+2 của roadmap là bắt cái trong phiên **đọc danh sách của phễu** thay vì tự đi
+tìm — xem mục 12.7.
+
 ---
 
 ## 2. Luồng dữ liệu
@@ -608,17 +628,95 @@ cũng vô hại.
 Nếu bạn muốn quét cả premarket sớm, đẩy `prep.py` lên `0 6` — nhưng nhớ là
 nến ngày hôm trước của Yahoo phải đã chốt.
 
-Khi dùng Phase 9, dòng 08:00 đổi thành chuỗi ba bước — kho nến trước, rồi
-baseline và bảng `struct` đọc lại từ kho đó (`&&` để một bước lỗi thì các bước
-sau không chạy trên dữ liệu cũ):
+Khi dùng phễu swing buổi sáng (mục 12), dòng 08:00 đổi thành **một** dòng gọi
+`nightly.py`:
 
 ```cron
-0 8 * * 1-5  cd /home/ubuntu/scanner && .venv/bin/python bars.py --sync >> state/prep.log 2>&1 && .venv/bin/python prep.py --from-bars >> state/prep.log 2>&1 && .venv/bin/python structure.py --build >> state/prep.log 2>&1 && .venv/bin/python setups.py --build >> state/prep.log 2>&1
+CRON_TZ=America/New_York
+0 8 * * 1-5  cd /home/ubuntu/scanner && .venv/bin/python nightly.py >> state/prep.log 2>&1
+0 9 * * 1-5  cd /home/ubuntu/scanner && .venv/bin/python scripts/mark_etf.py >> state/prep.log 2>&1
+5 9 * * 1-5  /usr/bin/systemctl restart scanner
 ```
 
-Cách này bỏ được **một lượt tải yfinance**: hiện tại `prep.py` tải 4 tháng nến
-cho ~5000 mã rồi ném đi, chỉ giữ 3 con số. Nhưng chỉ đổi sau khi đã đối chiếu
-`adv20`/`prev_close` giữa hai cách trên bản sao DB — xem cảnh báo ở mục 9.1.
+Trước đó chỗ này là một chuỗi bốn lệnh nối bằng `&&`:
+
+```cron
+# ĐỪNG dùng nữa — để đây làm mốc so sánh
+0 8 * * 1-5  cd /home/ubuntu/scanner && .venv/bin/python bars.py --sync >> state/prep.log 2>&1 && .venv/bin/python prep.py --from-bars >> ... && .venv/bin/python structure.py --build >> ... && .venv/bin/python setups.py --build >> ...
+```
+
+`&&` làm đúng một việc: bước lỗi thì bước sau không chạy trên dữ liệu cũ. Nó
+**không** làm ba việc còn lại, và đó là lý do thay:
+
+1. **Nó im lặng.** Bước 2 chết thì bạn không biết gì cho đến khi tự đi đọc
+   `prep.log`. `nightly.py` luôn gửi Telegram, kể cả khi lỗi, và nói rõ **bước
+   nào** lỗi vì **cái gì** (mục 12.5).
+2. **Mã thoát vô nghĩa.** `&&` trả mã của lệnh cuối chạy được, nên cron thấy
+   "OK". `nightly.py` trả 0 / 2 / 1 / 3 — bước không bắt buộc lỗi khác hẳn bước
+   bắt buộc lỗi, và `MAILTO` hay một systemd `OnFailure=` mới phân biệt được.
+3. **Không có chỗ nào ghi lại lần chạy.** `nightly.py` ghi bảng `night`, nên
+   dashboard trả lời được "lần cuối chạy xong là khi nào" — cái mà một chuỗi
+   `&&` về nguyên tắc không biết.
+
+Chuỗi cũ vẫn chạy được nếu bạn chỉ muốn Phase 9 mà không muốn phễu swing. Cả
+hai đều bỏ được **một lượt tải yfinance** so với `prep.py` trần: `prep.py` tải 4
+tháng nến cho ~5000 mã rồi ném đi, chỉ giữ 3 con số. Nhưng chỉ đổi sau khi đã
+đối chiếu `adv20`/`prev_close` giữa hai cách trên bản sao DB — xem cảnh báo ở
+mục 9.1.
+
+#### Cách thứ hai: systemd timer
+
+Timer dài hơn cron ba file nhưng được ba thứ cron không có: log đi vào
+`journalctl` cùng chỗ với service chính, `Persistent=true` chạy bù nếu VM tắt
+qua giờ đó, và `OnFailure=` gọi được một unit khác khi thất bại.
+
+`/etc/systemd/system/scanner-nightly.service`:
+
+```ini
+[Unit]
+Description=Scanner - phieu swing buoi sang (Stage 1-4)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/scanner
+ExecStart=/home/ubuntu/scanner/.venv/bin/python nightly.py
+# Chuoi nay khong bao gio chay 40 phut; qua nguong nay la treo o mot lan goi
+# mang, va treo thi phai chet de lan sau con chay, khong phai giu may mai.
+TimeoutStartSec=2400
+```
+
+`/etc/systemd/system/scanner-nightly.timer`:
+
+```ini
+[Unit]
+Description=Goi scanner-nightly luc 08:00 gio New York, ngay lam viec
+
+[Timer]
+# systemd hieu ten mui gio, nen no tu xu ly DST — giong CRON_TZ cua cron.
+OnCalendar=Mon..Fri 08:00 America/New_York
+# VM tat qua 08:00 thi chay ngay khi bat lai, thay vi bo ca ngay hom do.
+Persistent=true
+# Lech ngau nhien toi 3 phut: khong de ca the gioi goi yfinance dung giay 0.
+RandomizedDelaySec=180
+
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now scanner-nightly.timer
+systemctl list-timers scanner-nightly.timer   # lần kế tiếp là khi nào
+journalctl -u scanner-nightly.service -n 60   # panel của lần chạy gần nhất
+sudo systemctl start scanner-nightly.service   # chạy tay ngay bây giờ
+```
+
+⚠️ **Chọn một, đừng chạy cả hai.** Hai lịch cùng gọi `nightly.py` lúc 08:00 thì
+hai tiến trình cùng ghi `bars`/`struct`, và bạn nhận hai tin nhắn mỗi sáng. Nếu
+chuyển sang timer thì xoá dòng cron tương ứng bằng `crontab -e`.
 
 Kiểm tra cron có chạy thật:
 
@@ -1036,6 +1134,7 @@ riêng của project này, ChatGPT không có cách nào hiểu `12.4/12` nghĩa
 | `bars.py` | Kho nến ngày (~3 năm) trong SQLite. Lưu cả giá thô và giá đã điều chỉnh |
 | `structure.py` | Đo cấu trúc giá từ nến ngày: nền tích luỹ, pivot, độ sâu cú rơi. Chỉ **đo**, không phán xét |
 | `setups.py` | Hai setup BO/RV: ngưỡng nền (buổi tối) + điều kiện kích hoạt (trong phiên) |
+| `plan.py` | Từ `struct` ra **kế hoạch lệnh**: điểm vào, cắt lỗ, mục tiêu, cỡ vị thế. Thuần stdlib, không import `setups.py` |
 | `backtest.py` | Chạy lại BO/RV trên nến ngày quá khứ. Gọi đúng hàm của bot, có mốc so sánh "vào mù" |
 | `clock.py` | Lịch phiên NYSE → giờ Đức. Xử lý DST lệch, nửa phiên, ngày lễ |
 | `universe_live.py` | Gộp Alpaca + Yahoo screener → dict các mã đang chạy |
@@ -1051,7 +1150,22 @@ riêng của project này, ChatGPT không có cách nào hiểu `12.4/12` nghĩa
 | `events.py` | Log có cấu trúc `state/events.jsonl` — 1 dòng JSON/alert, để máy đọc |
 | `halts.py` | Feed tạm dừng giao dịch của Nasdaq. Chỉ trong RAM, không ghi DB |
 | `news.py` | Tin tức theo mã + bảng từ khoá catalyst. Sổ tay cuộn 4 giờ trong RAM |
+| `push.py` | Đẩy snapshot lên Cloudflare D1 cho trang web. Mở DB ở chế độ **chỉ đọc** |
 | `tests/` | Test chạy được cả bằng `pytest -q` và bằng `python tests/test_x.py` |
+
+Phễu swing buổi sáng (mục 12) — năm file, chạy theo thứ tự đó:
+
+| File | Việc |
+|---|---|
+| `config.py` | **Mọi ngưỡng của Stage 1–4, một chỗ.** Dashboard đọc đúng file này để hiện bảng Config |
+| `regime.py` | Stage 1: trạng thái thị trường từ nến SPY → bảng `regime` + tra bảng playbook |
+| `sectors.py` | Stage 2: xếp hạng 11 sector SPDR → bảng `sector_rank` (có lịch sử, `--backfill`) |
+| `holdings.py` | Stage 3: đọc `holdings/sector_holdings.csv` — thành phần sector, **chép tay, không scrape** |
+| `watchlist.py` | Cửa vào của phần **trong phiên** (mục 12.7): sàn chất lượng + cổng regime + đọc danh sách của hôm nay. Thuần stdlib — yfinance chỉ import bên trong đúng một hàm |
+| `render_night.py` | Dựng tin nhắn buổi sáng. **Thuần hàm** — giống `render.py`, không network, không DB |
+| `nightly.py` | Xâu các bước lại (`nightly.NAMES`), ghi bảng `night`, luôn gửi Telegram kể cả khi lỗi, trả mã thoát cho cron |
+| `holdings/sector_holdings.csv` | ~250 mã → sector. Có `as_of=` ở đầu file; quá 180 ngày thì cảnh báo |
+| `scripts/demo_stage3.py` | Dựng DB giả để xem dashboard/tin nhắn mà không cần mạng |
 | `.github/workflows/ci.yml` | CI: compile + selftest (không thư viện) và `pytest` (đủ thư viện) |
 | `scripts/mark_etf.py` | Gắn cờ `is_etf` từ Nasdaq Trader. **Bắt buộc sau `prep.py`** |
 | `scripts/check_calendar.py` | In lịch phiên 60 ngày tới theo giờ Đức |
@@ -1091,16 +1205,26 @@ không nút vẫn hơn không có alert.
 
 | Bảng | Tạo bởi | Nội dung |
 |---|---|---|
-| `base` | `prep.py` | 1 dòng/mã: adv20, atr14, prev_close, float_sh, cik, is_etf |
+| `base` | `prep.py` | 1 dòng/mã: adv20, atr14, prev_close, float_sh, cik, **exch**, is_etf |
 | `meta` | `prep.py` | Cặp key-value: `built`, `count`, `etf_marked` |
 | `bars` | `bars.py` | Nến ngày, khoá `(sym, d)`: o/h/l/c + `ac` (adj close) + v. Giữ ~800 phiên |
 | `struct` | `structure.py` | 1 dòng/mã, **dựng lại toàn bộ mỗi tối**: nền tích luỹ, pivot, off_high, rs_pct |
-| `candidates` | `setups.py` | Danh sách theo dõi cho phiên tới, khoá `(sym, setup)`. Cũng dựng lại toàn bộ |
+| `candidates` | `setups.py` + `plan.py` | Danh sách theo dõi cho phiên tới, khoá `(sym, setup)`, **kèm kế hoạch lệnh** (`trigger`, `stop`, `target`, `size_pct`). Cũng dựng lại toàn bộ |
 | `alerts` | `main.py` | Lịch sử alert đã gửi. Dùng cho `restore_today()` |
 | `alert_msg` | `store.py` | `sym`+`day` → `message_id` + snapshot (để tính delta) |
 | `watch` | `store.py` | Mã đang theo dõi trong phiên (`kind='track'`) |
 | `outcome` | `outcome.py` | 1 dòng/alert: px0, px15, px60, px_close, đỉnh, đáy |
 | `kv` | `store.py` | Hiện chỉ giữ `tg_offset` của `getUpdates` |
+| `regime` | `regime.py` | 1 dòng/phiên: trend, vol, sma50/200, độ dốc, atr_pct. **Ghi thêm, không ghi đè** |
+| `sector_rank` | `sectors.py` | 1 dòng/(phiên, sector): hạng, điểm, ret21/63/126, ba cờ xu hướng |
+| `night` | `nightly.py` | 1 dòng/lần chạy: mã thoát, giây, nến quyết định, JSON của từng bước, cảnh báo |
+
+Ba bảng dưới **giữ lịch sử** thay vì dựng lại mỗi tối như `struct`/`candidates`.
+Khác biệt đó là cố ý: biểu đồ lịch sử hạng ngành trên dashboard và cột "Δ5d /
+Δ21d" đọc chính lịch sử này, nên một bảng dựng lại mỗi tối sẽ không bao giờ trả
+lời được "tuần trước sector này đứng thứ mấy". `night` thì bị cắt còn
+`KEEP_RUNS` dòng gần nhất; hai bảng kia không cắt (11 dòng/phiên ≈ 2.800
+dòng/năm — không đáng dọn).
 
 DB bật WAL nên nhiều tiến trình đọc/ghi cùng lúc không sao.
 
@@ -2287,6 +2411,457 @@ Giờ đã có test và CI thì mọi chỉnh sửa sau này đều rẻ hơn: s
 layout bị bắt trước khi `git pull` lên VM. Với Phase 9 thì tầng lưu trữ và tầng
 đo là **thuần stdlib** nên còn chạy được cả trên máy dev — 4 lỗi thiết kế của
 `find_base()` bị bắt ở đó, trước khi đẩy lên VM.
+
+---
+
+## 12. Phễu swing buổi sáng (Stage 1–4)
+
+Một lần chạy lúc **08:00 ET** mỗi ngày làm việc, trả lời hai câu theo thứ tự:
+
+1. **Hôm nay được phép làm gì?** — trạng thái thị trường quyết định setup nào
+   được bật và cỡ vị thế bao nhiêu. Có ngày câu trả lời là "không gì cả".
+2. **Nếu được phép, thì ở đâu?** — ba nhóm ngành mạnh nhất, rồi cổ phiếu dẫn dắt
+   *trong* ba nhóm đó.
+
+Thứ tự này là cả thiết kế. Bắt đầu từ cổ phiếu rồi mới hỏi bối cảnh thì lúc nào
+cũng tìm được vài mã đang chạy — kể cả giữa một đợt bán tháo, ngay trước lúc
+chúng quay đầu.
+
+```
+   08:00 ET, cron hoặc systemd timer gọi nightly.py
+        │
+        ├─ ① bars      kho nến ngày (yfinance) — nến của ngày đang chạy bị bỏ
+        ├─ ② prep      adv20/atr14/prev_close đọc lại từ kho nến
+        │
+        ├─ ③ regime    STAGE 1  nến SPY → UPTREND / RANGE / DOWNTREND / …
+        │              + biên độ CONTRACTED / NORMAL / EXPANDED
+        │              → tra config.PLAYBOOK → setup được phép + cỡ vị thế
+        │                                            ↓ bảng `regime`
+        ├─ ④ sectors   STAGE 2  11 sector SPDR → hạng 1..11
+        │              điểm = trung bình percentile của ret21/63/126
+        │                                            ↓ bảng `sector_rank`
+        ├─ ⑤ structure          đo nền tích luỹ / pivot / off_high từng mã
+        ├─ ⑥ setups    STAGE 3  thành phần của 3 sector đầu bảng
+        │              → sàn chất lượng → RS vs SPY → gần đỉnh 52 tuần
+        │              → top 5/sector, tối đa 10  ↓ bảng `candidates`
+        │
+        ├─ ⑦ push      STAGE 4  4 snapshot → Cloudflare D1 → trang web
+        └─ ⑧ telegram  STAGE 4  một tin nhắn, LUÔN gửi kể cả khi có bước lỗi
+                                            ↓ bảng `night` (lần chạy này)
+```
+
+### 12.1 Bốn stage, bằng lời
+
+**Stage 1 — `regime.py`.** Đọc ~400 nến SPY. Giá so với SMA50/SMA200; độ dốc
+SMA50 so với 10 phiên trước (`>+0.5%` lên, `<-0.5%` xuống, còn lại phẳng) →
+`UPTREND` / `UPTREND_UNDER_STRESS` / `RANGE` / `DOWNTREND`. Riêng biên độ:
+`ATR(14)/giá` của phiên cuối so với **trung bình của chính nó** 100 phiên →
+`CONTRACTED` / `NORMAL` / `EXPANDED`. So với chính nó chứ không với một con số
+tuyệt đối, vì "ATR 1.2%" là cao hay thấp còn tuỳ thị trường năm đó.
+
+Cặp `(trend, vol)` tra vào `config.PLAYBOOK` — **12 dòng viết hết ra**, không
+phải ba câu `if` lồng nhau. Bảng tra thì đọc một cái là biết bot làm gì ở mọi
+trạng thái; `if` lồng nhau thì phải chạy thử mới biết. Mỗi dòng cho `setups` nào
+được phép, `size` (1.0 / 0.5 / **0.0 = không mở vị thế mới**), và một `note`
+tiếng Việt đi nguyên văn vào tin nhắn lẫn dashboard.
+
+`size == 0.0` là cờ máy đọc được duy nhất cho "đứng ngoài". Đừng suy ra từ
+`setups` rỗng — hai thứ đó có thể lệch nhau.
+
+**Stage 2 — `sectors.py`.** Lợi nhuận 21 / 63 / 126 **phiên** (không phải ngày
+lịch) cho 11 sector SPDR. Điểm tổng = trung bình ba **hạng percentile**, không
+phải trung bình ba lợi nhuận: tháng 4/2025 XLE +18% trong khi cả rổ +2% thì
+"trung bình lợi nhuận" biến bảng xếp hạng thành cuộc đo về một mã, còn percentile
+chỉ hỏi "hơn được bao nhiêu sector khác".
+
+Ba cờ phụ — trên SMA50, trên EMA21, SMA50 đang dốc lên — **không** vào điểm
+tổng. Chúng là bộ lọc để đọc bảng, vì một sector có thể đứng đầu chỉ nhờ giảm ít
+nhất.
+
+Mỗi phiên ghi thêm 11 dòng vào `sector_rank`, nên có lịch sử để so hạng với **5
+và 21 phiên trước** (↑n / ↓n / —) và để vẽ biểu đồ 90 phiên trên dashboard.
+`XLP` hoặc `XLU` (nhóm phòng thủ) vào top 3 thì cảnh báo riêng: đó là dấu hiệu
+tiền đang rút khỏi rủi ro, chứ không phải một cơ hội.
+
+**Stage 3 — `holdings.py` + profile `LEAD` trong `setups.py`.** Chỉ xét mã thuộc
+3 sector đầu bảng. Bảy bộ lọc, mọi ngưỡng nằm trong `config.LEAD`:
+
+| Lọc | Ngưỡng | Vì sao |
+|---|---|---|
+| Giá | `> $10` | dưới mức này phần trăm to là chuyện tầm thường |
+| Thanh khoản | `adv50 × giá > $20M` | mốc "có tổ chức tham gia" |
+| RVol | `> 1.5` | hôm nay đang có người để ý đến nó |
+| Biên độ | `2% ≤ ATR/giá ≤ 6%` | dưới 2% không bù nổi phí; trên 6% stop hợp lý rộng đến mức vị thế thành vô nghĩa |
+| RS vs SPY | dương ở **cả** 21d **và** 63d | một cửa sổ có thể là may; hai cửa sổ cùng dương thì khó là may hơn |
+| Cách đỉnh 52 tuần | `≤ 15%` | cổ phiếu dẫn dắt làm đỉnh mới |
+| Trần danh sách | 5/sector, 10 tổng | dài hơn thì không còn là "dẫn dắt", và trong phiên không theo nổi bằng mắt |
+
+Xếp phần còn lại theo điểm RS. **Không ngưỡng nào hardcode trong code** —
+`setups.py` chỉ làm `LEAD = config.LEAD`, và `lead_candidate(m, g=...)` vẫn nhận
+dict bất kỳ để `backtest.py` quét nhiều bộ ngưỡng trong một lượt.
+
+**Stage 3b — `plan.py`: kế hoạch lệnh.** Stage 3 trả lời "mã này có đáng theo
+dõi không". Nó **không** trả lời "vào ở đâu, cắt ở đâu, bao nhiêu" — và trước
+đây bảng `candidates` chỉ có `pivot`, không có stop và không có cỡ vị thế, nên
+cái gọi là "kế hoạch đã chốt từ tối qua" thực ra chưa bao giờ tồn tại. `plan.py`
+là nửa còn lại, và mọi ngưỡng nằm trong `config.PLAN`:
+
+| Con số | Cách tính | Vì sao thế |
+|---|---|---|
+| `trigger` | `max(pivot, hi1) × (1 + 0.1%)` | vượt **mốc cao nhất** đã biết; `hi1` = đỉnh của chính nến quyết định, để mã không có nền tích luỹ vẫn có mốc |
+| `stop` | `trigger − 1.5 × ATR(14)` | theo biên độ của **chính mã đó**, không phải một con số % cố định cho cả bảng |
+| `target` | `trigger + 2 × (trigger − stop)` | R:R = 2 |
+| `size_pct` | `0.75% ÷ (khoảng cách stop tính theo %)`, chặn trần `20%`, rồi **× hệ số playbook** | rủi ro cố định mỗi lệnh, còn cỡ vị thế thì thay đổi theo mã |
+
+Bốn con số này tính từ **nến đã chốt** và **không đổi trong phiên**. Phần trong
+phiên chỉ so giá với chúng, không tính lại — đó là cả điểm của thiết kế.
+
+⚠️ **Trần `20%` chặn thường xuyên hơn là tưởng.** Nó bắt đầu chặn khi khoảng
+cách stop nhỏ hơn `0.75% ÷ 20% = 3.75%`, tức là với mọi mã có ATR dưới ~2.5%
+— và `config.LEAD` nhận ATR từ 2%. Nên một phần danh sách chạy ở đúng 20% vốn
+với rủi ro **thực sự** dưới 0.75%. Đó là cố ý (rủi ro thấp hơn dự tính thì không
+sao), nhưng đừng đọc `risk_pct` như một hằng số.
+
+⚠️ **Chưa có trần tổng.** 10 mã × 20% = 200% vốn. `plan.py` không biết portfolio
+nên không thể tự chặn; chỗ đúng để chặn là cổng trong phiên, sau khi đọc vị thế
+đang mở. Ghi ở đây để không ai tưởng trần 20% là đã đủ.
+
+`size` và `size_pct` là **hai con số khác nhau**: `size` là hệ số của ô playbook
+(0.0 / 0.5 / 1.0 — "hôm nay được đánh bao nhiêu phần"), `size_pct` là cỡ vị thế
+**cuối cùng** và đã nhân hệ số đó rồi. Nhân lại lần nữa ở dashboard hay ở phần
+trong phiên là tự giảm vị thế xuống một nửa mà không ai thấy.
+
+Mặc định khi **không biết** trạng thái thị trường (`regime` chưa có dòng nào,
+hoặc `regime.py` không import được) là `size = 0.0` — đứng ngoài. Một Stage 1
+chết không được sinh ra một ngày full size mà không ai được báo.
+
+Không đo được ATR hoặc không có mốc giá → `plan.make()` trả `None`, dòng đó
+không có kế hoạch, và tin nhắn buổi sáng **nói ra** là những mã đó không vào
+lệnh hôm nay. Thiếu thì thiếu, không bịa.
+
+**Stage 4 — `push.py` + `render_night.py` + dashboard.** Xem 12.4 và 12.5.
+
+Bảng `DANH SÁCH THEO DÕI` trong tin nhắn buổi sáng in `VAO / STOP / MUCTIEU /
+CACH / CO` — kế hoạch, không phải chỉ số. Bốn cột `RS21 / RS63 / OFF-HI / ATR%`
+đã chuyển sang dashboard: chúng trả lời "vì sao mã này có trong danh sách", một
+câu hỏi của tối qua. Lúc 8h sáng câu hỏi là "vào ở đâu, cắt ở đâu, bao nhiêu".
+Bề rộng panel giữ ở **47 ký tự** vì `<pre>` của Telegram trên điện thoại vỡ cột
+khi rộng hơn, và `watch_top = 40` nên **không** thêm được panel thứ hai (2 × 40
+dòng sẽ đẩy tin nhắn quá `SAFE_LEN` và `fit()` sẽ bỏ mất bảng xếp hạng ngành —
+tức là bỏ mất nguồn của chính danh sách đó).
+
+`push.py` chọn cột bằng `_pick()` — giao của cột nó muốn và cột bảng **thật sự
+có**. Lý do: `_rows()` nuốt `sqlite3.Error` và trả `[]`, nên một câu `SELECT` có
+cột thiếu không báo lỗi, nó làm **cả bảng watchlist biến mất** khỏi dashboard và
+đọc giống hệt một đêm không có mã nào đạt. `push.py` chạy như một tiến trình
+riêng với `setups.py` nên hai bên có thể lệch phiên bản trong vài giờ sau deploy.
+
+### 12.2 Chạy tay
+
+Mọi module đều chạy độc lập được, và `--dry-run` nghĩa là **tính hết, in ra,
+không ghi gì**:
+
+```bash
+cd ~/scanner && source .venv/bin/activate
+
+# cả chuỗi, xem tin nhắn trước khi nó đến điện thoại
+python nightly.py --dry-run
+
+# một stage
+python regime.py  --dry-run          # trạng thái hôm nay + dòng playbook
+python sectors.py --dry-run          # bảng 11 sector
+python setups.py  --dry-run          # danh sách theo dõi
+python watchlist.py --show           # cổng regime + danh sách đã ép sàn chất lượng
+
+# chạy lại vài bước sau khi sửa ngưỡng, không tải lại nến
+python nightly.py --only regime,sectors,structure,setups
+
+# xem lịch sử đã lưu
+python regime.py  --show 20          # 20 phiên gần nhất
+python sectors.py --show 10
+python setups.py  --show LEAD
+
+# in ngưỡng đang chạy — đúng cái dashboard hiện
+python regime.py --config
+python sectors.py --config
+
+# lần chạy gần nhất ra sao, không chạy lại gì
+python nightly.py --status
+```
+
+`--dry-run` của `nightly.py` **không gọi mạng**: nó bỏ `bars` và `prep`. Không
+phải để nhanh — `bars.sync` *ghi* vào kho nến, và một lần chạy thử không được
+sửa kho nến. Nghĩa là nó báo cáo trên kho nến đang có; muốn kho mới thì chạy thật.
+
+Không muốn đụng DB thật thì trỏ sang bản khác:
+
+```bash
+cp state/baseline.db /tmp/thu.db
+python nightly.py --db /tmp/thu.db --only regime,sectors
+```
+
+Chưa có dữ liệu mà muốn xem tin nhắn/dashboard trông thế nào:
+
+```bash
+python scripts/demo_stage3.py        # dựng DB giả, không cần mạng
+```
+
+### 12.3 Dựng lại lịch sử (`--backfill`)
+
+Cột "Δ5d / Δ21d" và biểu đồ 90 phiên đọc bảng `sector_rank`. Chạy ngày đầu thì
+bảng có **một** phiên, nên cả hai đều trống — không phải lỗi, chỉ là chưa có gì
+để so. Dựng lại từ kho nến:
+
+```bash
+python sectors.py --backfill 120     # lặp lại 120 phiên gần nhất
+python sectors.py --show 10          # kiểm tra
+```
+
+Backfill tính lại từ nến đã lưu, nên nó **không** gọi mạng và chạy lại bao nhiêu
+lần cũng ra cùng kết quả. Cần khoảng `140 + N` nến trong kho
+(`SECTORS["min_bars"] = 140`: `ret126` cần 127 nến, độ dốc SMA50 cần 50 + 10);
+thiếu thì phiên đó bị bỏ qua chứ **không** bỏ bớt cửa sổ — một bảng xếp hạng
+thiếu cột 126d mà vẫn in ra là loại lỗi không ai đọc kỹ để phát hiện.
+
+Bảng `regime` cũng ghi thêm theo phiên nhưng **không có** `--backfill`, vì
+dashboard chỉ dùng dòng mới nhất. Muốn lịch sử regime thì gọi
+`regime.build(db, d=...)` trong một vòng lặp — hoặc cứ để nó tự đầy lên.
+
+⚠️ **Một hạn chế cần biết.** `sectors.changes()` đếm theo **các phiên có trong
+bảng**, không theo ngày lịch. VM tắt một tuần thì "5 phiên trước" ở đây là 5 **bản
+ghi** trước — tức là hơn hai tuần thực tế, và không có gì trên màn hình nói ra
+điều đó. `--backfill` lấp lại lịch sử liên tục là cách sửa; hàm không tự phát
+hiện lỗ hổng.
+
+### 12.4 Làm mới file thành phần sector
+
+`holdings/sector_holdings.csv` là **file tĩnh chép tay, không scrape**, có dòng
+`# as_of=YYYY-MM-DD` ở đầu.
+
+**Vì sao không scrape.** Trang holdings của `ssga.com` không có API ổn định.
+Scrape thì có ngày nó đổi layout, parser trả về rỗng, và Stage 3 sẽ báo "không có
+mã nào đạt" — một câu **hợp lý về mặt cú pháp** cho một ngày thị trường tăng, nên
+nó lọt qua mắt. File tĩnh không có kiểu thất bại đó: hoặc nó ở đây, hoặc
+`holdings.load()` báo lỗi ngay.
+
+**Đánh đổi:** thành phần sector đổi vài lần một năm (S&P đảo rổ, công ty đổi
+nhóm, M&A), nên file **sẽ** cũ dần. `config.HOLDINGS["max_age_days"] = 180` là
+mốc cảnh báo, và cảnh báo đó lên cả tin nhắn lẫn dashboard:
+
+```
+!! file holdings cũ 452 ngày (as_of 2025-06-30, trần 180)
+   → làm mới từ file chính thức của SPDR, xem README
+```
+
+**Cách làm mới** (khoảng 15 phút, hai lần một năm là đủ):
+
+1. Với mỗi ETF trong `config.SECTOR_ETFS`, mở
+   `https://www.ssga.com/us/en/intermediary/etfs/funds/the-select-sector-spdr-trust-<mã>`
+   → *Holdings* → **Daily Holdings (XLS)**.
+2. Lấy cột ticker. Bỏ tiền và cân nặng — file này chỉ cần `mã → sector`.
+3. Ghép vào `holdings/sector_holdings.csv` theo đúng dạng `SECTOR,TICKER`, một
+   dòng một mã.
+4. Sửa `# as_of=` thành ngày của file bạn vừa tải. **Đây là bước hay quên**, và
+   quên thì cảnh báo tuổi file thành vô nghĩa.
+5. Ticker phải là dạng Yahoo: `BRK.B` → `BRK-B`. `--check` bắt lỗi này.
+
+```bash
+python holdings.py --check           # định dạng + đối chiếu với kho nến
+python holdings.py --show XLK        # xem một sector
+```
+
+⚠️ `--check` kiểm **định dạng**, không kiểm **tính đúng đắn**. Một công ty đã đổi
+sector vẫn qua hết mọi phép kiểm.
+
+### 12.5 Trang web lấy dữ liệu từ đâu
+
+**Không có HTTP endpoint nào trên VM.** Spec ban đầu yêu cầu bốn endpoint
+`/api/regime`, `/api/sectors`, `/api/watchlist`, `/api/status`. VM **không mở
+cổng vào nào** — đó là một quyết định an ninh có chủ ý (mục 5.12), và mở cổng
+80/443 cho một dashboard đọc-là-chính thì lật ngược nó. Thay vào đó luồng chảy
+một chiều, VM luôn là bên gọi:
+
+```
+   nightly.py bước ⑦
+        │  push.py  →  POST /api/scanner  (token của writer)
+        ▼
+   Cloudflare Pages Function  →  D1, bảng `scanner_kv`
+        ▲
+        │  scannerPull(since)  (token của reader)
+   Trình duyệt — tab "Máy quét" của screener-ts
+```
+
+Bốn "endpoint" thành **bốn khoá D1**, và `scannerPull(since)` chính là cái API:
+
+| Khoá | Nội dung | Thay endpoint |
+|---|---|---|
+| `scanner:regime` | trend, vol, playbook, cỡ vị thế, nến quyết định | `/api/regime` |
+| `scanner:sectors` | 11 dòng + lịch sử 90 phiên cho biểu đồ | `/api/sectors` |
+| `scanner:watchlist` | danh sách theo dõi + cỡ vị thế từng mã | `/api/watchlist` |
+| `scanner:status` | lần chạy cuối, bước nào lỗi, nguồn dữ liệu, cờ "cũ quá" | `/api/status` |
+| `scanner:thresholds` | `config.snapshot()` — bảng Config chỉ đọc | — |
+
+⚠️ **Tên khoá là `scanner:thresholds`, không phải `scanner:config`.** Function
+phía Cloudflare giữ riêng `scanner:config` và `scanner:commands` cho chiều
+**app → VM** (`APP_KEYS` trong `functions/api/scanner/[[path]].ts`), nên token
+writer của VM bị trả 403 nếu ghi vào đó. Đổi tên khoá này sẽ làm bảng Config
+trống mà không báo lỗi gì.
+
+Ba việc `push.py` làm mà đáng nhớ:
+
+- **Mở DB ở chế độ chỉ đọc** (`mode=ro` qua URI). Một lỗi trong file này không
+  thể làm hỏng 3 năm nến.
+- **So digest trước khi gửi**, và `ts`/`age_sec` bị loại khỏi digest — không thì
+  mọi lần chạy đều "có thay đổi" chỉ vì đồng hồ nhích.
+- **Không có spool.** Mất mạng thì bỏ vòng này. Một alert Telegram bỏ lỡ là mất
+  hẳn; một snapshot thì vô giá trị ngay khi có bản mới.
+
+Trên dashboard, **banner "số liệu cũ"** bật khi lần chạy thành công gần nhất cũ
+hơn `NIGHTLY["stale_hours"] = 36` — tính bằng **giờ làm việc**, thứ Bảy và Chủ
+Nhật không tính (`push._biz_hours`). 36 chứ không phải 24 vì cron chạy ngày làm
+việc: sáng thứ Hai, bản ghi mới nhất là sáng thứ Sáu, hơn 48 giờ thực — một
+ngưỡng 24 giờ sẽ báo động **mọi thứ Hai** cho đến khi không ai đọc banner nữa, và
+lúc đó nó không còn báo được sự cố thật.
+
+"Lỗi" và "cũ" là **hai dòng riêng**, vì một lần chạy thất bại một giờ trước thì
+vừa mới vừa hỏng — và chỉ dòng "lỗi" mới nói ra bước nào cần đi xem.
+
+Link `#scanner` trong tin nhắn buổi sáng mở thẳng tab đó; URL suy ra từ
+`SCANNER_PUSH_URL` nên hai bên không thể trỏ vào hai domain khác nhau.
+
+### 12.6 Giới hạn của nguồn dữ liệu
+
+Bảy điều đã biết. Không cái nào là bug; biết trước thì không mất buổi nào đi tìm.
+
+1. **yfinance là dữ liệu trễ, không phải realtime**, và không có SLA. Với chuỗi
+   08:00 ET thì không sao — nó đọc nến *hôm qua*, đã chốt từ lâu. Nhưng dòng
+   "Nguồn dữ liệu" trên dashboard nói thẳng điều này, vì cùng một nguồn mà dùng
+   trong phiên thì lại không ổn.
+2. **Nến điều chỉnh bị viết lại về quá khứ.** Chia cổ tức hay split hôm nay làm
+   đổi cả chuỗi `ac` phía sau. Nghĩa là `--backfill` chạy hôm nay có thể ra hạng
+   hơi khác với hạng đã ghi ngày đó — số cũ không "sai", chúng là ảnh chụp
+   của dữ liệu lúc bấy giờ.
+3. **Nến ngày đang chạy bị bỏ, ba lớp.** `bars.sync(drop_partial=True)`, rồi
+   `regime._closed()` / `sectors._closed()`, rồi `nightly._check_bar()` so nến
+   quyết định với ngày ET hiện tại và **báo động nếu hai cái trùng nhau**. Lớp 3
+   không thay hai lớp trên; nó là cái báo rằng hai lớp trên đã hỏng. Đây là kiểu
+   lỗi mà nếu không có ai báo thì nó chỉ hiện ra dưới dạng "kết quả backtest đẹp
+   một cách khả nghi".
+4. **Thiếu SPY là thất bại im lặng nếu không phòng.** `universe` của `prep.py`
+   lọc theo screener cổ phiếu, không đảm bảo có ETF. Nên `config.REGIME_SYMS`
+   buộc SPY + 11 sector luôn có trong kho; thiếu SPY thì `regime.py` trả `None`
+   và cả chuỗi mất ý nghĩa.
+5. **`sectors.changes()` đếm bản ghi, không đếm ngày lịch** — xem 12.3.
+6. **File holdings cũ dần** — xem 12.4. Cổ phiếu đã đổi sector vẫn nằm ở nhóm cũ
+   cho đến lần làm mới tiếp theo.
+7. **Không có bid-ask, không có vốn hoá.** Sàn chất lượng của Stage 3 dùng giá và
+   giá-trị-giao-dịch thay thế. Hai cái đó lọc được gần hết cùng một tập mã, nhưng
+   không phải tất cả: một ADR thanh khoản mỏng với spread rộng có thể lọt qua.
+   Prompt 2 thêm tiêu chí vốn hoá và sàn niêm yết cho phần trong phiên.
+
+### 12.7 `watchlist.py` — cửa vào của phần trong phiên
+
+Phần trong phiên đang chuyển từ *đi tìm* sang *theo dõi*. `main.py` cũ tự tìm mã
+bằng screener top-mover, và đó chính là nguồn của toàn bộ rác giá thấp: phần trăm
+biến động là một con số **rẻ** với cổ phiếu $3, nên top-mover gần như luôn là cổ
+phiếu $3 — spread rộng, không có tổ chức tham gia, gap qua đêm không đỡ được.
+
+`watchlist.py` là cửa duy nhất đi vào phần trong phiên. Ba việc, không việc nào
+gửi tin nhắn hay gọi mạng (trừ một hàm cache vốn hóa):
+
+#### Sàn chất lượng — `check(m, g, ref_bars)`
+
+Trả về **hai** danh sách: `(bị loại, không đo được)`.
+
+| Sàn | Ngưỡng (`config.INTRADAY`) | Thiếu dữ liệu thì |
+|---|---|---|
+| Giá | `> $10` | **loại** — không có giá thì không có gì để nói |
+| Thanh khoản | `adv50 × giá > $20M/ngày` | **loại** — mã qua được LEAD thì bắt buộc đã có `adv50`; thiếu nghĩa là `struct` và `candidates` lệch phiên |
+| Vốn hóa | `> $2B` | không đo được |
+| Sàn niêm yết | NYSE · NASDAQ · **ARCA** | không đo được |
+| Tuổi niêm yết | `≥ 250` nến trong kho | không đo được (xem dưới) |
+| Spread | `≤ 0.15%` giá | không đo được |
+| Kế hoạch lệnh | có `trigger` **và** `stop` | **loại** — không có kế hoạch thì trong phiên lại phải ứng biến |
+
+> ⚠️ **Đây là sàn, không phải tham số để nới.** Hạ giá xuống $5 hay hạ thanh
+> khoản xuống $5M là mời lại đúng đám rác mà cả thiết kế này dùng để chặn. Chúng
+> nằm trong `config.py` để đọc được, không phải để tinh chỉnh.
+
+> ⚠️ **Thiếu dữ liệu không bao giờ là "đạt".** Một tiêu chí không đo được đi
+> nguyên văn vào tin nhắn (*"chưa biết vốn hóa"*, *"chưa kiểm được spread"*).
+> Làm tròn nó thành dấu tích thì sàn $2B trở thành một câu trong config chứ không
+> phải một cái sàn — và không có cách nào phát hiện từ bên ngoài.
+
+**ARCA được nhận.** Sàn niêm yết chỉ áp cho đường cổ phiếu. Bỏ ARCA là bỏ SPY và
+cả 11 mã XL\*, tức là phá Stage 1–2; `config.REGIME_SYMS` không đi qua sàn này.
+
+**Tuổi niêm yết chỉ đo được gián tiếp** bằng số nến trong kho, nên nó có ba
+nhánh, không phải hai: ít nến mà kho sâu (SPY ≥ 250 nến) → mã mới thật, **loại**;
+ít nến mà cả kho đều nông → *không kiểm được*, vì kho vừa backfill thì **mọi** mã
+đều "mới" và loại sạch danh sách là biến một vấn đề hạ tầng thành một phiên im
+lặng.
+
+**Vốn hóa là số thật, không phải vốn hóa float.** `base.float_sh × giá` là vốn
+hóa *float*, lệch hẳn khi nội bộ giữ nhiều cổ phần. Bước `mktcap` của `nightly.py`
+gọi yfinance lấy `marketCap` cho **đúng** các mã trong danh sách (≤ 10 mã/đêm),
+cache vào `base.mktcap` với TTL 7 ngày → thực tế là một chữ số request mỗi đêm,
+thường là 0 vì cache còn hạn. Bước này **không bắt buộc**: một lần yfinance hỏng
+không được huỷ cả chuỗi chạy đêm, mã thiếu vốn hóa đi vào phiên kèm ghi chú.
+Lấy không được thì **không ghi gì cả** — không ghi `0` (sẽ loại mã vĩnh viễn) và
+không ghi `mktcap_ts` (sẽ thành "đã kiểm rồi" và không thử lại trong 7 ngày).
+
+#### Cổng regime — `gate(db)`
+
+Cổng **cứng, xét một lần lúc khởi động**: nó quyết định loại alert nào *tồn tại*
+trong phiên, chứ không lọc từng alert một.
+
+| Chế độ | Nghĩa | Sinh ra khi |
+|---|---|---|
+| `full` | đầy đủ — cả vào mới và quản lý vị thế | còn lại |
+| `revert` | chỉ hồi về trung bình | playbook cho đúng `("RV",)` |
+| `manage` | chỉ quản lý vị thế đang có | playbook không cho setup nào, hoặc cỡ = 0 |
+| `stop_only` | chỉ báo cắt lỗ cho vị thế đang mở | `DOWNTREND` |
+
+Bốn chế độ này **suy ra từ `config.PLAYBOOK`**, không phải một bảng `if` thứ hai:
+một bảng thứ hai sẽ lệch với tin nhắn buổi sáng mà không ai thấy.
+
+> ⚠️ **Không biết thì đứng ngoài.** Thiếu bảng `regime`, không mở được DB, hay
+> cặp trend/vol vô nghĩa → `stop_only`. Mặc định ngược lại (`full`) nghĩa là một
+> Stage 1 chết sẽ cho ra một phiên đánh full size mà không ai được báo.
+
+#### Đọc danh sách — `load(db, day=...)`
+
+Đọc các dòng `setup='LEAD'` của `candidates` (một phiên duy nhất, đã chốt), ép sàn
+chất lượng, trả về `rows` / `drop` / `day` / `stale` / `note` / `manual`.
+
+- **Kế hoạch hết hạn bị gọi tên.** Nến quyết định cách hôm nay quá 3 **ngày làm
+  việc** → `stale=True` kèm câu giải thích. Đếm ngày làm việc, không ngày lịch:
+  một ngưỡng theo ngày lịch sẽ báo động **mọi** thứ Hai, và một báo động báo mọi
+  thứ Hai là một báo động bị tắt. Ba ngày chứ không một: sáng thứ Ba sau một thứ
+  Hai nghỉ lễ, nến thứ Sáu đã cách 2 ngày làm việc.
+- **Danh sách rỗng là một kết quả có câu giải thích**, không phải sự im lặng.
+- **Thêm tay** qua bảng `watch` với `kind='manual'`: vẫn phải có dòng trong
+  `candidates` (tức vẫn phải có kế hoạch lệnh), vẫn ép sàn chất lượng y nguyên,
+  và được đánh dấu `_manual` để tin nhắn nói rõ mã này do mình thêm. Mã thêm tay
+  được gộp vào **trước** khi xét "danh sách rỗng" — trường hợp dùng nhất của nó
+  chính là đêm qua không mã nào đạt.
+
+```bash
+python watchlist.py --show                 # cổng regime + danh sách + lý do bị loại
+python watchlist.py --mktcap               # làm mới cache vốn hóa (có gọi mạng)
+python watchlist.py                        # selftest, không mạng, không DB
+```
+
+#### Chưa làm
+
+Còn lại của prompt 2, theo thứ tự đã thống nhất: quy tắc **Tier 1** (giá chạm
+`trigger` kèm RVol đã chuẩn hoá theo giờ, phá `stop`, gap > 3% lúc mở) gắn vào
+`main.py` sau cổng regime; cầu `scanner:positions` để biết vị thế đang mở (cần
+cho `stop_only` và cho trần vị thế toàn sổ — xem cảnh báo ở **Stage 3b**); rồi
+**Tier 2**, và chỉ sau khi đã chạy thật một phiên. `"SPIKE"` đã có mặt trong bảng
+playbook từ trước chính là để chuyện đó không sinh ra một bảng thứ hai.
+
+---
 
 ## Giấy phép
 

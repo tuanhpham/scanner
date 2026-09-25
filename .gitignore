@@ -434,6 +434,11 @@ __pycache__/
 *.pyc
 .env
 state/*.db
+# Hai file phu cua che do WAL. `state/*.db` KHONG khop chung vi duoi file that su
+# la ".db-wal"/".db-shm", va chung hien ra ngay khi co mot ket noi mo - tuc la sau
+# moi lan chay. Khong bo qua thi `git status` luc nao cung lan rac.
+state/*.db-shm
+state/*.db-wal
 state/*.log
 state/*.json
 state/*.jsonl

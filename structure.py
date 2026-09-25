@@ -27,6 +27,7 @@ from bisect import bisect_left
 from pathlib import Path
 
 import bars
+import config
 from bars import Bar
 
 ROOT = Path(__file__).resolve().parent
@@ -61,6 +62,28 @@ def _sma(vals: list[float], n: int) -> list[float | None]:
     for i in range(n, len(vals)):
         s += vals[i] - vals[i - n]
         out[i] = s / n
+    return out
+
+
+def _ema(vals: list[float], n: int) -> list[float | None]:
+    """EMA, cung do dai voi `vals`, chua du nen thi None.
+
+    Mam la SMA cua n nen dau (khong phai vals[0]): lay vals[0] lam mam thi
+    nen dau tien co trong so qua lon va EMA lech trong ~3n nen dau - du de doi
+    dau mot cau tra loi "gia tren hay duoi ema21".
+
+    De o structure.py chu khong o sectors.py: tang nay la tang DO, va repo nay
+    giu dung MOT dinh nghia cho moi chi bao (xem atr_last).
+    """
+    out: list[float | None] = [None] * len(vals)
+    if n <= 0 or len(vals) < n:
+        return out
+    k = 2.0 / (n + 1.0)
+    e = sum(vals[:n]) / n
+    out[n - 1] = e
+    for i in range(n, len(vals)):
+        e = vals[i] * k + e * (1.0 - k)
+        out[i] = e
     return out
 
 
@@ -269,6 +292,7 @@ def metrics(bs: list[Bar], max_depth: float = BASE_MAX_DEPTH) -> dict | None:
         atr_contract = atr14 / atr[-51]
 
     ret63 = (px / cl[-64] - 1.0) if (n >= 64 and cl[-64]) else None
+    ret21 = (px / cl[-22] - 1.0) if (n >= 22 and cl[-22]) else None
 
     base = find_base(bs[:-1], max_depth)
     base_dryup = None
@@ -304,11 +328,20 @@ def metrics(bs: list[Bar], max_depth: float = BASE_MAX_DEPTH) -> dict | None:
         "sma20": s20[-1], "sma50": s50[-1], "sma200": s200[-1],
         "sma50_slope": slope50,
         "hi52": hi52, "lo52": lo52,
+        # Dinh/day cua CHINH nen quyet dinh. plan.trigger() dung hi1 lam moc
+        # "vuot dinh hom qua" cho nhung ma khong co nen tich luy (pivot None).
+        # Khong the lay tu hi52 - do la dinh cua ca nam.
+        "hi1": today.h, "lo1": today.l,
         "off_high": (hi52 - px) / hi52 if hi52 else None,
         "up_from_low": px / lo52 - 1.0 if lo52 else None,
         "adv20": adv20, "adv50": adv50, "dryup": dryup,
         "atr14": atr14, "atr_pct": atr_pct, "atr_contract": atr_contract,
-        "ret63": ret63, "rs_pct": None,          # build() dien sau khi xep hang
+        "ret63": ret63, "ret21": ret21,
+        # build() dien ba cot duoi sau khi biet ca ro / biet ma chuan.
+        # rs_pct = percentile ret63 trong ca ro (so voi CAC MA KHAC).
+        # rs21/rs63 = loi nhuan vuot troi so voi SPY (so voi THI TRUONG).
+        # Hai khai niem khac nhau, dung lan nhau la mot loi im lang.
+        "rs_pct": None, "rs21": None, "rs63": None,
         "base_len": base["len"] if base else 0,
         "base_depth": base["depth"] if base else None,
         "base_slope": base["slope"] if base else None,
@@ -337,8 +370,10 @@ def rank_pct(vals: dict[str, float]) -> dict[str, float]:
 
 # ───────────────────────── bang `struct` ─────────────────────────
 COLS = ("d", "px", "n_bars", "sma20", "sma50", "sma200", "sma50_slope",
-        "hi52", "lo52", "off_high", "up_from_low", "adv20", "adv50", "dryup",
-        "atr14", "atr_pct", "atr_contract", "ret63", "rs_pct", "base_len",
+        "hi52", "lo52", "hi1", "lo1",
+        "off_high", "up_from_low", "adv20", "adv50", "dryup",
+        "atr14", "atr_pct", "atr_contract", "ret63", "ret21", "rs_pct",
+        "rs21", "rs63", "base_len",
         "base_depth", "base_slope", "base_dryup", "pivot", "dist_pivot",
         "depth20", "tight10", "close_pos", "gap", "vol_ratio",
         "below20_streak", "days_since_low")
@@ -348,10 +383,11 @@ CREATE TABLE IF NOT EXISTS struct(
   sym TEXT PRIMARY KEY,
   d TEXT, px REAL, n_bars INTEGER,
   sma20 REAL, sma50 REAL, sma200 REAL, sma50_slope REAL,
-  hi52 REAL, lo52 REAL, off_high REAL, up_from_low REAL,
+  hi52 REAL, lo52 REAL, hi1 REAL, lo1 REAL,
+  off_high REAL, up_from_low REAL,
   adv20 REAL, adv50 REAL, dryup REAL,
   atr14 REAL, atr_pct REAL, atr_contract REAL,
-  ret63 REAL, rs_pct REAL,
+  ret63 REAL, ret21 REAL, rs_pct REAL, rs21 REAL, rs63 REAL,
   base_len INTEGER, base_depth REAL, base_slope REAL, base_dryup REAL,
   pivot REAL, dist_pivot REAL, depth20 REAL, tight10 REAL,
   close_pos REAL, gap REAL, vol_ratio REAL,
@@ -361,9 +397,32 @@ CREATE INDEX IF NOT EXISTS ix_struct_base ON struct(base_len);
 """
 
 
+def _migrate(c: sqlite3.Connection) -> bool:
+    """Bang `struct` thieu cot so voi COLS -> XOA va tao lai. Tra ve co xoa hay khong.
+
+    `CREATE TABLE IF NOT EXISTS` khong them cot vao bang da ton tai, nen khi
+    COLS dai ra (them ret21/rs21/rs63 cho Stage 3) thi DB cu tren VM se vo o
+    cau SELECT dau tien - luc 08:00, giua chuoi cron.
+
+    Xoa la an toan: bang nay la BAN TINH LAI hoan toan tu `bars`, va build() da
+    ghi de ca bang moi lan chay. Khong mat du lieu goc nao. Lam tu dong chu
+    khong de trong README vi mot buoc thu cong se bi quen dung mot lan.
+    """
+    have = {x[1] for x in c.execute("PRAGMA table_info(struct)")}
+    if not have or have >= set(COLS) | {"sym", "updated"}:
+        return False
+    log(f"  [structure] bang `struct` thieu cot "
+        f"{sorted(set(COLS) - have)} -> xoa va tinh lai tu `bars`")
+    with c:
+        c.execute("DROP TABLE struct")
+    c.executescript(DDL)
+    return True
+
+
 def con(db=DB) -> sqlite3.Connection:
     c = bars.con(db) if not isinstance(db, sqlite3.Connection) else db
     c.executescript(DDL)
+    _migrate(c)
     return c
 
 
@@ -395,6 +454,31 @@ def build(db=DB, limit: int = 0, min_bars: int = MIN_HIST) -> dict:
     for s, m in out.items():
         m["rs_pct"] = r.get(s)
 
+    # Suc manh tuong doi so voi MA CHUAN (khac rs_pct - xem chu thich trong
+    # metrics). Tinh o day chu khong trong metrics() vi metrics() chi biet mot
+    # ma; con phep so nay can ca SPY.
+    #
+    # Thieu SPY -> rs21/rs63 = None, va lead_candidate() loai het. Do la co y:
+    # "khong biet co manh hon thi truong hay khong" khong bao gio duoc coi la
+    # "co". Bao thanh mot dong log de con tim ra, thay vi de Stage 3 tra ve
+    # danh sach rong ma khong noi ly do.
+    bench = out.get(config.BENCH)
+    if not bench:
+        log(f"  [structure] khong co {config.BENCH} trong kho nen -> rs21/rs63 "
+            f"= NULL, profile LEAD se khong chon duoc ma nao. Chay "
+            f"`python bars.py --sync --full`.")
+    else:
+        for w in (21, 63):
+            b = bench.get(f"ret{w}")
+            if b is None:
+                log(f"  [structure] {config.BENCH} chua du nen cho ret{w} "
+                    f"-> rs{w} = NULL")
+                continue
+            for m in out.values():
+                mine = m.get(f"ret{w}")
+                if mine is not None:
+                    m[f"rs{w}"] = mine - b
+
     now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     ins = (f"INSERT INTO struct(sym,{','.join(COLS)},updated) "
            f"VALUES({','.join('?' * (len(COLS) + 2))})")
@@ -412,6 +496,10 @@ def load_struct(db=DB, syms: list[str] | None = None) -> dict[str, dict]:
     c, mine = bars._c(db)
     try:
         c.executescript(DDL)
+        # Bang cu (thieu cot) -> xoa va tra ve rong, thay vi vo o SELECT. Rong
+        # thi setups.py ghi 0 candidate va MAX_AGE se bao "du lieu cu"; con vo
+        # thi ca chuoi cron dung. Lan build() tiep theo dien lai day du.
+        _migrate(c)
         q = f"SELECT sym,{','.join(COLS)} FROM struct"
         if syms:
             q += f" WHERE sym IN ({','.join('?' * len(syms))})"
@@ -443,6 +531,21 @@ def _series(specs: list[tuple[float, float, int]], start: str = "2024-01-02",
 
 def _smoke() -> None:
     import tempfile
+
+    # --- _ema ---
+    assert _ema([1.0] * 5, 10) == [None] * 5, "chua du nen -> None het"
+    flat = _ema([7.0] * 30, 10)
+    assert flat[8] is None and abs(flat[9] - 7.0) < 1e-9
+    assert all(abs(v - 7.0) < 1e-9 for v in flat[9:]), "chuoi phang -> ema phang"
+    ramp = [float(i) for i in range(1, 61)]
+    up = _ema(ramp, 21)
+    assert up[-1] < ramp[-1], "EMA phai tre sau gia trong xu huong tang"
+    # Tren duong tang DEU, EMA va SMA cung ky tre nhu nhau ((n-1)/2 = (1-k)/k
+    # = 10 phien) -> gan bang nhau. Cho nen phep thu "EMA nhanh hon SMA" phai
+    # dung mot cu NHAY, khong phai mot doan tang deu.
+    assert abs(up[-1] - _sma(ramp, 21)[-1]) < 0.5
+    nhay = [10.0] * 40 + [20.0] * 5
+    assert _ema(nhay, 21)[-1] > _sma(nhay, 21)[-1], "EMA phai bat cu nhay nhanh hon"
 
     # --- find_base: nen phang 45 phien di sau mot cu tang 50% ---
     bs = _series([(20.0, 30.0, 60), (30.0, 30.0, 45)])
@@ -532,10 +635,11 @@ def _fmt(v, w=8, p=2) -> str:
     return f"{v:>{w}.{p}f}" if isinstance(v, (int, float)) else f"{'-':>{w}}"
 
 
-def _show(sym: str) -> None:
-    m = load_struct(DB, [sym]).get(sym)
+def _show(sym: str, db=None) -> None:
+    db = DB if db is None else db
+    m = load_struct(db, [sym]).get(sym)
     if not m:
-        bs = bars.load(DB, sym)
+        bs = bars.load(db, sym)
         m = metrics(bs)
         print(f"(chua co trong bang struct, tinh truc tiep tu {len(bs)} nen)")
     if not m:
@@ -559,10 +663,14 @@ if __name__ == "__main__":
     ap.add_argument("--build", action="store_true")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--show", metavar="SYM")
+    # Giong regime.py/sectors.py: chay thu tren mot ban copy cua kho nen ma
+    # khong cham vao state/baseline.db that.
+    ap.add_argument("--db", default=str(DB))
     a = ap.parse_args()
+    DB = Path(a.db)
 
     if a.show:
-        _show(a.show.upper())
+        _show(a.show.upper(), db=DB)
         raise SystemExit(0)
 
     if not a.build:

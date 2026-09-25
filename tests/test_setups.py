@@ -99,6 +99,18 @@ def test_candidates_qua_han_tra_ve_rong():
     assert se.load_candidates(db, today="2024-07-01", max_age=None)
 
 
+def test_dry_run_tinh_het_nhung_khong_ghi_gi():
+    db = _db({"AAA": base_row(), "DIP": dip_row()})
+    r = se.build(db, dry=True)
+    assert r["BO"] == 1 and r["RV"] == 1 and len(r["rows"]) == 2
+    assert se.load_candidates(db, today="2024-06-04") == {}
+    # va khong duoc xoa danh sach da co: dry-run phai vo hai ca hai chieu
+    se.build(db)
+    assert len(se.load_candidates(db, today="2024-06-04")) == 2
+    se.build(db, dry=True)
+    assert len(se.load_candidates(db, today="2024-06-04")) == 2
+
+
 def test_load_candidates_loc_theo_setup():
     db = _db({"AAA": base_row(), "DIP": dip_row()})
     se.build(db)
@@ -106,12 +118,89 @@ def test_load_candidates_loc_theo_setup():
     assert set(se.load_candidates(db, "RV", today="2024-06-04")) == {"DIP"}
 
 
+LEAD_ONLY = {"sector", "rs21", "rs63"}
+# Cot ke hoach lenh: plan.make() gan trong scan(), SAU khi da ap tran - nen mot
+# dong vua ra khoi *_candidate() chua co chung. Xem
+# test_scan_dien_du_moi_cot_ke_ca_cot_ke_hoach.
+PLAN_COLS = {"trigger", "stop", "target", "stop_pct", "risk_pct", "size_pct"}
+
+
 def test_cols_khop_ddl():
     c = se.con(Path(tempfile.mkdtemp()) / "t.db")
     have = {r[1] for r in c.execute("PRAGMA table_info(candidates)")}
     assert set(se.COLS) | {"sym", "updated"} == have
-    cand = se.bo_candidate(base_row())
-    assert set(se.COLS) - set(cand) == set(), set(se.COLS) - set(cand)
+    c.close()
+
+    # LEAD phai dien DU moi cot NGOAI cot ke hoach: ke hoach do scan() gan sau
+    # khi da ap tran (plan.make() chi tinh cho nhung ma thuc su vao danh sach).
+    ld = se.lead_candidate(se._lead_row(), sector="XLK")
+    assert set(se.COLS) - set(ld) == PLAN_COLS, set(se.COLS) - set(ld)
+
+    # BO/RV chi thieu dung ba cot cua rieng LEAD (build() ghi NULL) + cot ke
+    # hoach. Assert theo CA HAI chieu: neu mai sau them cot cho BO ma quen
+    # dien, test phai do - chu khong phai lang le ghi NULL vao bang.
+    for cand in (se.bo_candidate(base_row()),
+                 se.rv_candidate(dip_row(), fund={"ok": True, "score": 0.5})):
+        assert set(se.COLS) - set(cand) == LEAD_ONLY | PLAN_COLS, cand["setup"]
+        assert set(cand) - set(se.COLS) == {"sym"}, cand["setup"]
+
+
+def test_scan_dien_du_moi_cot_ke_ca_cot_ke_hoach():
+    """Dong RA KHOI scan() phai day du - do la dong duoc ghi vao DB.
+
+    Invariant nay manh hon "tung ham candidate dien du cot": ke hoach lenh duoc
+    gan trong scan() chu khong trong lead_candidate(), nen cho duy nhat kiem tra
+    duoc "khong co cot nao lang le thanh NULL" la o day.
+    """
+    struct = {"AAA": se._lead_row(), "BBB": base_row(),
+              "CCC": dip_row()}
+    rows, _ = se.scan(struct, fund={"CCC": {"ok": True, "score": 0.5}},
+                      lead_sectors={"AAA": "XLK"})
+    assert rows, "fixture phai sinh ra it nhat mot dong"
+    for r in rows:
+        thieu = set(se.COLS) - set(r)
+        if r["setup"] == "LEAD":
+            assert thieu == set(), f"LEAD thieu cot {thieu}"
+        else:
+            # BO/RV van thieu ba cot cua rieng LEAD, nhung KE HOACH thi phai co:
+            # phan intraday canh stop cho ca BO/RV, khong chi cho LEAD.
+            assert thieu == LEAD_ONLY, f"{r['setup']} thieu cot {thieu}"
+        assert r["trigger"] and r["stop"], f"{r['sym']}/{r['setup']}: thieu ke hoach"
+        assert r["stop"] < r["trigger"], "stop phai duoi diem vao"
+
+
+def test_size_mult_0_thi_moi_dong_co_size_pct_0():
+    # UPTREND_UNDER_STRESS / DOWNTREND -> playbook size 0. Ke hoach van phai co
+    # (canh stop can no), nhung co vi the phai la 0 o MOI dong. Mot dong sot lai
+    # size > 0 la mot dong tin nhan buoi sang noi "vao lenh" trong ngay dang le
+    # phai dung ngoai.
+    struct = {"AAA": se._lead_row(), "BBB": base_row()}
+    rows, _ = se.scan(struct, lead_sectors={"AAA": "XLK"}, size_mult=0.0)
+    assert rows
+    assert all(r["size_pct"] == 0.0 for r in rows), [
+        (r["sym"], r["size_pct"]) for r in rows]
+    # Nhung trigger/stop van phai co.
+    assert all(r["trigger"] and r["stop"] for r in rows)
+
+
+def test_migrate_them_cot_thi_tinh_lai_khong_phai_bao_loi():
+    """Bang `candidates` cu (thieu cot LEAD) -> DROP va tao lai, khong crash.
+
+    An toan vi build() ghi de ca bang moi lan chay. Tu dong chu khong phai mot
+    buoc trong README, vi buoc trong README se bi quen dung mot lan: luc 08:00
+    tren VM.
+    """
+    db = Path(tempfile.mkdtemp()) / "t.db"
+    c = se.con(db)
+    c.executescript("DROP TABLE candidates;"
+                    "CREATE TABLE candidates(sym TEXT, setup TEXT, d TEXT,"
+                    " quality REAL, updated TEXT, PRIMARY KEY(sym,setup));")
+    c.execute("INSERT INTO candidates VALUES('CU','BO','2020-01-01',0.5,'x')")
+    c.commit()
+    assert se._migrate(c) is True
+    have = {r[1] for r in c.execute("PRAGMA table_info(candidates)")}
+    assert set(se.COLS) | {"sym", "updated"} == have
+    assert se._migrate(c) is False, "chay lai khong duoc xoa nua"
     c.close()
 
 
@@ -227,6 +316,166 @@ def test_rv_phai_dong_o_vung_dinh_ngay():
     c = se.rv_candidate(dip_row(), fund={"ok": True})
     assert se.trig_rv(c, {**RV_Q, "px": 6.5, "hi": 7.0, "lo": 6.4}) is None
     assert se.trig_rv(c, {**RV_Q, "rvol": 2.0}) is None
+
+
+# ───────────────────── LEAD (Stage 3) ─────────────────────
+def lead_row(**kw) -> dict:
+    return se._lead_row(**kw)
+
+
+def test_lead_san_tinh_bang_TIEN_khong_bang_phan_tram():
+    """Day la ly do Stage 3 ton tai. Ba ma cung tang manh, chi mot duoc nhan.
+
+    Scanner trong phien hien tai xep hang theo % tang ngay, nen no luon tra ve
+    hai ma dau. Dolar volume la thu duy nhat phan biet duoc chung.
+    """
+    rac_re = lead_row(px=4.0, adv50=5_000_000.0)          # 5M x $4  = $20M... nhung gia < $10
+    rac_mong = lead_row(px=25.0, adv50=400_000.0)         # 400k x $25 = $10M
+    that = lead_row(px=25.0, adv50=3_000_000.0)           # $75M
+    assert se.lead_candidate(rac_re, sector="XLK") is None
+    assert se.lead_candidate(rac_mong, sector="XLK") is None
+    assert se.lead_candidate(that, sector="XLK")
+    # va san la san: ha nguong xuong thi rac di qua ngay. Test nay la de khi ai
+    # do dinh "noi long mot chut" thi thay ro minh dang mo lai cai cua nao.
+    long_le = {**se.LEAD, "min_px": 1.0, "min_dollar_vol": 1_000_000.0}
+    assert se.lead_candidate(rac_re, long_le, sector="XLK")
+    assert se.lead_candidate(rac_mong, long_le, sector="XLK")
+
+
+def test_lead_khong_biet_sector_thi_loai_chu_khong_doan():
+    assert se.lead_candidate(lead_row()) is None
+    assert se.lead_candidate(lead_row(), sector=None) is None
+    assert se.lead_candidate(lead_row(), sector="") is None
+    assert se.lead_candidate(lead_row(), sector="XLK")
+
+
+def test_lead_can_manh_hon_spy_o_ca_hai_cua_so():
+    """Mot cua so co the la may. Hai cua so cung duong thi kho la may hon."""
+    assert se.lead_candidate(lead_row(rs21=0.05, rs63=0.11), sector="XLK")
+    assert se.lead_candidate(lead_row(rs21=-0.01), sector="XLK") is None
+    assert se.lead_candidate(lead_row(rs63=-0.01), sector="XLK") is None
+
+
+def test_lead_thieu_rs_thi_loai_khong_coi_nhu_0():
+    """structure.build() de rs21/rs63 = NULL khi kho nen khong co SPY.
+
+    Luc do phai KHONG CO ma nao trong danh sach, chu khong phai ca universe deu
+    "khong yeu hon SPY" va di qua het.
+    """
+    ly_do: dict = {}
+    assert se.lead_candidate(lead_row(rs21=None, rs63=None), sector="XLK",
+                             rej=ly_do) is None
+    assert any("RS" in k for k in ly_do), ly_do
+    rows, rej = se.scan({f"S{i}": lead_row(rs21=None, rs63=None)
+                         for i in range(20)},
+                        lead_sectors={f"S{i}": "XLK" for i in range(20)})
+    assert [r for r in rows if r["setup"] == "LEAD"] == []
+    assert rej["LEAD"]["_qua_san"] == 0
+
+
+def test_lead_bien_do_phai_nam_trong_khoang():
+    """Duoi 2% khong du dong de kiem tien; tren 6% stop rong den vo nghia."""
+    assert se.lead_candidate(lead_row(atr_pct=0.03), sector="XLK")
+    assert se.lead_candidate(lead_row(atr_pct=0.019), sector="XLK") is None
+    assert se.lead_candidate(lead_row(atr_pct=0.061), sector="XLK") is None
+    assert se.lead_candidate(lead_row(atr_pct=None), sector="XLK") is None
+
+
+def test_lead_phai_o_gan_dinh_52_tuan():
+    assert se.lead_candidate(lead_row(off_high=0.14), sector="XLK")
+    assert se.lead_candidate(lead_row(off_high=0.16), sector="XLK") is None
+    assert se.lead_candidate(lead_row(off_high=None), sector="XLK") is None
+
+
+def test_lead_tran_moi_sector_chan_duoc_mot_sector_chiem_het():
+    """10 ma tong nhung 5 moi sector: neu chi cat tong thi XLK an het 10 cho.
+
+    Luc do "dan dat o top 3 sector" tren tin nhan la mot cau khong dung.
+    """
+    ds = [se.lead_candidate(lead_row(sym=f"K{i}", rs63=0.20 - i * 0.001),
+                            sector="XLK") for i in range(12)]
+    ds += [se.lead_candidate(lead_row(sym=f"F{i}", rs63=0.10), sector="XLF")
+           for i in range(4)]
+    ly_do: dict = {}
+    giu = se.lead_pick(ds, rej=ly_do)
+    dem: dict[str, int] = {}
+    for x in giu:
+        dem[x["sector"]] = dem.get(x["sector"], 0) + 1
+    assert dem["XLK"] == se.LEAD["per_sector"] == 5, dem
+    assert dem["XLF"] == 4, dem
+    # XLK manh hon TAT CA ma XLF, nhung tong chi 9 chu khong phai 10: tran moi
+    # sector rang buoc TRUOC tran tong. De lai mot cho trong con hon them mot ma
+    # XLK thu sau.
+    assert len(giu) == 9 < se.LEAD["max_total"], len(giu)
+    assert ly_do["da du 5 ma cua XLK"] == 7, ly_do
+
+
+def test_lead_diem_la_rs_va_cat_tran():
+    a = se.lead_candidate(lead_row(rs63=0.25), sector="XLK")["quality"]
+    b = se.lead_candidate(lead_row(rs63=0.05), sector="XLK")["quality"]
+    assert a > b
+    tran = se.lead_candidate(lead_row(rs63=se.LEAD["rs_cap63"]),
+                             sector="XLK")["quality"]
+    vo_cuc = se.lead_candidate(lead_row(rs63=3.0), sector="XLK")["quality"]
+    assert tran == vo_cuc, "tren tran khong con phan biet duoc gi"
+    # 63 phien nang hon 21 phien
+    assert (se.lead_candidate(lead_row(rs21=0.0, rs63=0.30),
+                              sector="XLK")["quality"]
+            > se.lead_candidate(lead_row(rs21=0.15, rs63=0.0),
+                                sector="XLK")["quality"])
+
+
+def test_lead_khong_co_ham_kich_hoat_trong_phien():
+    """CO Y. LEAD la danh sach swing; diem vao cua no la TRADE PLAN cua prompt 2.
+
+    Neu ai do nhet LEAD vao TRIG tro den trig_bo thi LEAD se alert theo pivot
+    cua nen tich luy - mot con so lead_candidate() khong he kiem tra va co the
+    la None. Test nay de chan viec do.
+    """
+    c = se.lead_candidate(lead_row(), sector="XLK")
+    assert "LEAD" not in se.TRIG
+    assert se.check(c, BO_Q) is None
+
+
+def test_lead_ctx_bang_sector_rank_rong_thi_canh_bao():
+    sec = _util.need("sectors")
+    db = _db({"AAPL": lead_row(sym="AAPL")})
+    c = se.con(db)
+    ctx = se.lead_ctx(c)
+    assert ctx["map"] == {} and ctx["top"] == []
+    assert any("sector_rank" in w for w in ctx["warn"]), ctx["warn"]
+
+    sec.con(c)
+    sec.save(c, "2024-06-03", [{"sym": s, "rank": i, "composite": 100.0 - i}
+                               for i, s in enumerate(("XLK", "XLF", "XLE",
+                                                      "XLV"), 1)])
+    ctx = se.lead_ctx(c)
+    assert ctx["top"] == ["XLK", "XLF", "XLE"], ctx["top"]
+    assert ctx["map"], "phai co ma tu holdings.csv"
+    assert set(ctx["map"].values()) <= {"XLK", "XLF", "XLE"}
+    assert ctx["map"].get("AAPL") == "XLK"
+    assert "XOM" in ctx["map"] and "PG" not in ctx["map"], "XLP khong o top 3"
+    c.close()
+
+
+def test_lead_chi_lay_ma_thuoc_top_sector():
+    """Ma khong co trong holdings.csv thi khong bao gio vao danh sach.
+
+    Du no manh hon moi ma khac. Do la cai gia phai tra cho mot file tinh - va
+    la ly do --check phai chay khi lam moi file.
+    """
+    db = _db({"AAPL": lead_row(sym="AAPL"), "LDR": lead_row(sym="LDR")})
+    c = se.con(db)
+    sec = _util.need("sectors")
+    sec.con(c)
+    sec.save(c, "2024-06-03", [{"sym": s, "rank": i, "composite": 100.0 - i}
+                               for i, s in enumerate(("XLK", "XLF", "XLE"), 1)])
+    r = se.build(c)
+    assert r["LEAD"] == 1 and r["top_sector"] == ["XLK", "XLF", "XLE"]
+    got = se.load_candidates(c, "LEAD", today="2024-06-04")
+    assert set(got) == {"AAPL"}
+    assert got["AAPL"]["sector"] == "XLK"
+    c.close()
 
 
 # ───────────────────── ly do bi loai ─────────────────────

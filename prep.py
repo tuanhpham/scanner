@@ -54,7 +54,23 @@ def fetch_cik_map() -> dict[str, str]:
 
 
 # ---------------- 2. Universe tu Alpaca ----------------
-def fetch_universe() -> list[str]:
+def fetch_universe() -> dict[str, str]:
+    """{sym: san niem yet}. Xem CHU Y ve gia tri tra ve o duoi.
+
+    ⚠️ Truoc day ham nay tra ve `list[str]` va NEM SAN DI sau khi loc. Ket qua
+    la khong cho nao trong ca he thong biet duoc mot ma niem yet o dau, nen san
+    chat luong cua phan intraday (config.INTRADAY["exchanges"]) khong the kiem
+    tra lai duoc. Gio tra ve dict, va `exch` duoc ghi vao bang `base`.
+
+    `list(fetch_universe())` van cho ra danh sach ma nhu truoc (dict iterate ra
+    khoa), nen bars.py:352 khong phai doi.
+
+    `ok_ex` o day RONG HON config.INTRADAY["exchanges"]: no con nhan AMEX. Co y
+    - kho nen giu ca AMEX de backtest va de tra loi "vi sao ma nay khong co
+    trong danh sach". Viec loai AMEX la viec cua cong chat luong, khong phai
+    cua tang du lieu: mot tang du lieu da loc san thi khong con tra loi duoc
+    cau hoi "no bi loai vi sao".
+    """
     from alpaca.trading.client import TradingClient
     from alpaca.trading.enums import AssetClass, AssetStatus
     from alpaca.trading.requests import GetAssetsRequest
@@ -63,19 +79,22 @@ def fetch_universe() -> list[str]:
     assets = tc.get_all_assets(GetAssetsRequest(
         asset_class=AssetClass.US_EQUITY, status=AssetStatus.ACTIVE))
     ok_ex = {"NASDAQ", "NYSE", "AMEX", "ARCA"}
-    syms = []
+    out: dict[str, str] = {}
     for a in assets:
         if not a.tradable:
             continue
-        if str(a.exchange).split(".")[-1] not in ok_ex:
+        ex = str(a.exchange).split(".")[-1]
+        if ex not in ok_ex:
             continue
         s = a.symbol.upper()
         if any(ch in s for ch in ".-/ ") or len(s) > 5:
             continue  # bo preferred / warrant / unit
-        syms.append(s)
-    syms = sorted(set(syms))
-    log(f"Universe Alpaca: {len(syms)} ma")
-    return syms
+        out[s] = ex
+    out = {s: out[s] for s in sorted(out)}
+    log(f"Universe Alpaca: {len(out)} ma "
+        + " ".join(f"{e}={sum(1 for v in out.values() if v == e)}"
+                   for e in sorted(ok_ex)))
+    return out
 
 
 # ---------------- 3. Tinh chi so tu daily bars ----------------
@@ -139,6 +158,10 @@ def from_bars(con: sqlite3.Connection, cik: dict[str, str],
             rows.append((s, m["adv20"], m["atr14"], m["prev_close"],
                          cik.get(s), now))
     if rows:
+        # Khong co cot `exch` trong cau nay: --from-bars doc tu kho nen, khong
+        # goi Alpaca, nen no KHONG BIET san. Khong ghi con an toan hon ghi NULL
+        # - ghi NULL se xoa san da biet cua toan bo DB moi lan chay --from-bars,
+        # va cong chat luong se im lang loai sach moi ma.
         con.executemany(
             "INSERT INTO base(sym,adv20,atr14,prev_close,cik,updated) "
             "VALUES(?,?,?,?,?,?) ON CONFLICT(sym) DO UPDATE SET "
@@ -167,10 +190,47 @@ def download_batch(syms: list[str]) -> dict[str, pd.DataFrame]:
 DDL = """
 CREATE TABLE IF NOT EXISTS base (
   sym TEXT PRIMARY KEY, adv20 REAL, atr14 REAL, prev_close REAL,
-  float_sh REAL, cik TEXT, updated TEXT);
+  float_sh REAL, float_ts TEXT, cik TEXT, exch TEXT, is_etf INTEGER DEFAULT 0,
+  updated TEXT);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 CREATE INDEX IF NOT EXISTS ix_base_adv ON base(adv20);
 """
+
+# Cot them vao sau khi bang `base` da ton tai tren VM. `CREATE TABLE IF NOT
+# EXISTS` khong bao gio them cot vao bang co san, nen khong co doan migrate nay
+# thi mot DB cu se thieu cot va cau UPDATE tuong ung nem "no such column".
+#
+# Ba cot nay la ba lan phat hien khac nhau:
+#   exch      moi (san niem yet, cho cong chat luong cua phan intraday)
+#   float_ts  scorer.py:69 GHI cot nay tu lau ma DDL chua bao gio khai bao no
+#   is_etf    scorer.py:40 DOC cot nay; truoc day chi duoc them bang
+#             scripts/mark_etf.py chay tay, nen mot DB dung tu dau thi
+#             scorer.py vo ngay lan chay dau tien
+# Hai cai sau la loi da ton tai, khong phai do thay doi lan nay - nhung chung o
+# dung bang nay va sua o day la mot dong moi, nen sua luon.
+#
+# mktcap/mktcap_ts: von hoa THAT, do watchlist.refresh_mktcap() ghi cho dung cac
+# ma trong danh sach dem (<= 10 ma/dem). KHONG phai float_sh x gia - do la von
+# hoa FLOAT, lech han khi noi bo giu nhieu co phan. `mktcap_ts` la dau moc "da
+# kiem", va no CHI duoc ghi khi lay duoc so that: mot lan hong khong duoc bien
+# thanh "da biet von hoa = 0" roi bi TTL giu nguyen ca tuan.
+ADD_COLS = (("float_ts", "TEXT"), ("exch", "TEXT"),
+            ("is_etf", "INTEGER DEFAULT 0"),
+            ("mktcap", "REAL"), ("mktcap_ts", "TEXT"))
+
+
+def ensure_cols(con) -> list[str]:
+    """Them cot con thieu vao `base`. Tra ve danh sach cot vua them."""
+    have = {r[1] for r in con.execute("PRAGMA table_info(base)")}
+    added = []
+    for name, typ in ADD_COLS:
+        if name not in have:
+            con.execute(f"ALTER TABLE base ADD COLUMN {name} {typ}")
+            added.append(name)
+    if added:
+        con.commit()
+        log(f"bang `base`: them cot {', '.join(added)}")
+    return added
 
 
 def main() -> int:
@@ -187,6 +247,7 @@ def main() -> int:
     DB.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(DB)
     con.executescript(DDL)
+    ensure_cols(con)
 
     cik = fetch_cik_map()
 
@@ -205,7 +266,8 @@ def main() -> int:
             f"{time.time() - t0:.0f}s")
         return 0
 
-    syms = fetch_universe()
+    uni = fetch_universe()          # {sym: san}
+    syms = list(uni)
     if args.limit:
         syms = syms[: args.limit]
         log(f"CHE DO THU: chi xu ly {len(syms)} ma")
@@ -232,17 +294,19 @@ def main() -> int:
             if not m:
                 continue
             rows.append((s, m["adv20"], m["atr14"], m["prev_close"],
-                         cik.get(s), now))
+                         cik.get(s), uni.get(s), now))
         if rows:
             # COALESCE cho cik: SEC_UA sai -> fetch_cik_map() tra {} -> neu ghi
             # de thang thi mot lan prep.py chay se xoa sach cik cua CA DB va
-            # moi nut "Ho so SEC" chet am tham.
+            # moi nut "Ho so SEC" chet am tham. `exch` dung cung ly le: mot lan
+            # chay --from-bars khong biet san, khong duoc xoa san da biet.
             con.executemany(
-                "INSERT INTO base(sym,adv20,atr14,prev_close,cik,updated) "
-                "VALUES(?,?,?,?,?,?) ON CONFLICT(sym) DO UPDATE SET "
+                "INSERT INTO base(sym,adv20,atr14,prev_close,cik,exch,updated) "
+                "VALUES(?,?,?,?,?,?,?) ON CONFLICT(sym) DO UPDATE SET "
                 "adv20=excluded.adv20, atr14=excluded.atr14, "
                 "prev_close=excluded.prev_close, "
                 "cik=COALESCE(excluded.cik, base.cik), "
+                "exch=COALESCE(excluded.exch, base.exch), "
                 "updated=excluded.updated", rows)
             con.commit()
             kept += len(rows)

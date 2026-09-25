@@ -239,6 +239,46 @@ def _rows(c, sql: str, args=()) -> list[sqlite3.Row]:
         return []
 
 
+def _biz_hours(t0: dt.datetime, t1: dt.datetime) -> float:
+    """So gio giua hai moc, KHONG dem thu Bay va Chu Nhat.
+
+    Ly do khong dung (t1 - t0) tron: cron swing chay cac ngay lam viec, nen sang
+    thu Hai lan chay thanh cong gan nhat la sang thu Sau - hon 48 gio dong ho -
+    va mot nguong tinh theo gio dong ho se bao dong MOI thu Hai. Mot banner bao
+    dong moi tuan thi sau ba tuan khong ai con doc no, va luc do no khong con
+    bao duoc lan mat du lieu that.
+
+    Bo cuoi tuan di thi con so 36 gio lai co nghia dung nhu no noi: bo mot ngay
+    lam viec. Thu Sau 08:00 -> thu Hai 08:00 = 24 gio lam viec, khong tre.
+
+    Tinh theo UTC. Ranh gioi ngay UTC lech ranh gioi ET vai gio, nhung cron chay
+    08:00 ET = 12:00/13:00 UTC, xa hai dau ngay, nen khong doi ket qua.
+    """
+    if t1 <= t0:
+        return 0.0
+    tot = 0.0
+    cur = t0
+    while cur < t1:                     # mot vong moi ngay lich, khong moi gio
+        nxt = dt.datetime.combine((cur + dt.timedelta(days=1)).date(),
+                                  dt.time(0), tzinfo=cur.tzinfo)
+        seg = min(nxt, t1)
+        if cur.weekday() < 5:
+            tot += (seg - cur).total_seconds() / 3600.0
+        cur = seg
+    return tot
+
+
+def _iso(s: str | None) -> dt.datetime | None:
+    """ISO -> datetime co mui gio (coi khong co mui la UTC). Rac -> None."""
+    if not s:
+        return None
+    try:
+        t = dt.datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=dt.timezone.utc)
+
+
 def _age_days(day: str | None, today: str | None = None) -> int | None:
     if not day:
         return None
@@ -249,7 +289,63 @@ def _age_days(day: str | None, today: str | None = None) -> int | None:
         return None
 
 
-def status_payload(db=DB, today: str | None = None) -> dict:
+NIGHT_COLS = ("run_id", "day", "bar", "ok", "code", "sec", "dry")
+
+
+def _night(c, now: dt.datetime | None = None) -> dict | None:
+    """Lan chay swing gan nhat + lan THANH CONG gan nhat + co "so lieu cu".
+
+    Hai dong, khong mot: "chay luc 08:00 nhung buoc sectors do" va "khong chay
+    lan nao tu thu Ba" dan den hai viec phai lam khac nhau, va mot dong duy nhat
+    khong phan biet duoc chung. `stale` tinh theo lan THANH CONG - mot lan chay
+    do khong lam so lieu moi hon.
+    """
+    if not _has(c, "night"):
+        return None
+    cols = ",".join(NIGHT_COLS)
+
+    def row(where: str) -> dict | None:
+        r = _one(c, f"SELECT {cols},stages,warn FROM night {where} "
+                    f"ORDER BY run_id DESC LIMIT 1")
+        if not r:
+            return None
+        d = {k: r[k] for k in NIGHT_COLS}
+        for k in ("stages", "warn"):
+            try:
+                d[k] = json.loads(r[k] or "null")
+            except ValueError:
+                d[k] = None
+        return d
+
+    last, ok = row(""), row("WHERE ok=1")
+    if not last:
+        return None
+    out: dict = {"last": last, "last_ok": ok}
+    if last.get("stages"):
+        # Buoc nao do, goi ten. Buoc BI CHAN khong tinh: mot nguyen nhan thi ke
+        # mot loi, giong render_night._failed(). Xem nightly.py.
+        out["failed"] = [s.get("stage") for s in last["stages"]
+                         if not s.get("ok") and not s.get("blocked")]
+        out["blocked"] = [s.get("stage") for s in last["stages"]
+                          if s.get("blocked")]
+
+    try:
+        import config
+        lim = float(config.NIGHTLY["stale_hours"])
+    except Exception:                                            # noqa: BLE001
+        lim = 36.0
+    now = now or dt.datetime.now(dt.timezone.utc)
+    t = _iso(ok and ok.get("run_id"))
+    hrs = None if t is None else round(_biz_hours(t, now), 1)
+    out["stale"] = {"hours": hrs, "limit": lim,
+                    # hrs is None = chua chay thanh cong lan nao. Do cung la "cu"
+                    # - dashboard phai canh bao, khong duoc hien banner trang.
+                    "stale": hrs is None or hrs > lim}
+    return out
+
+
+def status_payload(db=DB, today: str | None = None,
+                   now: dt.datetime | None = None) -> dict:
     """Mot trang trang thai. Chi COUNT va MAX -> nhe, chay duoc moi phut.
 
     `age` la con so dang xem nhat o day. setups.MAX_AGE = 5: bang `candidates`
@@ -289,6 +385,12 @@ def status_payload(db=DB, today: str | None = None) -> dict:
                 out["beat"] = json.loads(r["v"])
             except Exception:                                    # noqa: BLE001
                 pass
+        # Chuoi chay swing. Nam trong `scanner:status` chu khong thanh khoa rieng
+        # vi day la SUC KHOE, va dashboard da doc khoa nay de biet bot con song
+        # hay khong - "cron toi qua co chay khong" la cung mot cau hoi. Chi phi
+        # la mot SELECT theo khoa chinh, chay moi phut duoc.
+        if (r := _night(c, now)):
+            out["night"] = r
     finally:
         c.close()
 
@@ -299,9 +401,35 @@ def status_payload(db=DB, today: str | None = None) -> dict:
     return out
 
 
+# Ke hoach lenh do plan.make() tinh tu nen quyet dinh dem truoc. Tach rieng khoi
+# CAND_COLS vi hai nhom co tuoi khac nhau: mot DB tren VM chua chay setups.py
+# ban moi thi bang `candidates` chua co sau cot nay.
+PLAN_COLS = ("trigger", "stop", "target", "stop_pct", "risk_pct", "size_pct")
+
 CAND_COLS = ("sym", "setup", "d", "ref_close", "pivot", "sma20", "adv20",
              "atr_pct", "base_len", "base_depth", "off_high", "rs_pct",
-             "dist_pivot", "fund_ok", "quality")
+             "dist_pivot", "fund_ok", "sector", "rs21", "rs63",
+             "quality") + PLAN_COLS
+
+
+def _table_cols(c, table: str) -> set[str]:
+    """Ten cot that su co trong bang. Dung de KHONG chon cot chua ton tai.
+
+    Vi sao can: `_rows()` nuot sqlite3.Error va tra [], nen mot cau SELECT co cot
+    thieu khong nem loi - no lam ca bang watchlist bien mat khoi dashboard, im
+    lang, va giong het mot dem khong co ma nao dat. push.py chay nhu mot tien
+    trinh rieng voi setups.py nen hai ben CO THE lech phien ban trong vai gio.
+    """
+    try:
+        return {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
+    except sqlite3.Error:
+        return set()
+
+
+def _pick(c, table: str, want) -> list[str]:
+    """Giao cua `want` va cot that co, giu nguyen thu tu cua `want`."""
+    have = _table_cols(c, table)
+    return [x for x in want if x in have]
 
 
 def candidates_payload(db=DB, top: int = TOP_N) -> dict | None:
@@ -320,7 +448,7 @@ def candidates_payload(db=DB, top: int = TOP_N) -> dict | None:
         if not sets:
             return None
         out: dict = {"ts": int(time.time() * 1000), "top": top, "by_setup": {}}
-        cols = ",".join(CAND_COLS)
+        cols = ",".join(_pick(c, "candidates", CAND_COLS))
         for s in sets:
             rows = _rows(c, f"SELECT {cols} FROM candidates WHERE setup=?"
                             " ORDER BY quality DESC LIMIT ?", (s, top))
@@ -330,6 +458,200 @@ def candidates_payload(db=DB, top: int = TOP_N) -> dict | None:
     finally:
         c.close()
     return out
+
+
+# ───────────────────── Stage 4: bon khoa cho trang swing ─────────────────────
+# Bon khoa nay la "API" ma go yeu cau (/api/regime, /api/sectors, /api/watchlist,
+# /api/status). Chung khong la bon endpoint HTTP tren VM vi VM KHONG MO CONG NAO
+# - do la mot quyet dinh an ninh, khong phai mot thieu sot. Duong di la:
+#
+#     VM (push.py)  --PUT-->  /api/scanner/kv/<key>  -->  D1
+#     browser       --GET-->  /api/scanner/kv?since  <--  D1
+#
+# nen mot "endpoint" o day chinh la mot khoa. Doi lai duoc mot thu: dashboard
+# doc duoc ca khi VM dang tat.
+#
+# CHU Y ve ten khoa: nguong cau hinh di vao `scanner:thresholds`, KHONG phai
+# `scanner:config`. Function o functions/api/scanner/[[path]].ts giu
+# `scanner:config` va `scanner:commands` cho phia APP ghi (do la duong nguoi
+# dung goi lenh xuong VM); token cua VM ghi vao do se bi tra 403. Hai chieu ghi,
+# hai khong gian ten.
+def _has(c, table: str) -> bool:
+    """Bang co ton tai va co du lieu khong.
+
+    Phai kiem TRUOC khi goi cac ham load cua regime.py/sectors.py: chung mo dau
+    bang `executescript(DDL)`, va tren ket noi mode=ro dieu do chi im lang khi
+    bang DA co (SQLite bo qua CREATE TABLE IF NOT EXISTS). Bang chua co -> loi
+    "attempt to write a readonly database", mot cau khong lien quan gi den
+    nguyen nhan that la "chua chay buoc do lan nao". Giong rejects_payload().
+    """
+    return _one(c, f"SELECT 1 FROM {table} LIMIT 1") is not None
+
+
+def regime_payload(db=DB) -> dict | None:
+    """Boi canh thi truong + o playbook dang ap dung.
+
+    Gui ca `prev` (phien truoc): cau duy nhat dang doc tren panel Today la
+    "hom nay khac hom qua o cho nao", va tinh no o day re hon la de dashboard
+    keo them mot khoa lich su.
+
+    `playbook` lay tu config.PLAYBOOK chu khong tu cot `playbook` trong DB: cot
+    do la anh chup luc ghi, con bang Config tren dashboard hien nguong DANG
+    chay. Lech nhau thi phai thay duoc, khong duoc lam phang.
+    """
+    try:
+        import config
+        import regime
+    except Exception as e:                                       # noqa: BLE001
+        log(f"push: khong import duoc regime/config: {e}")
+        return None
+    try:
+        c = _con(db)
+    except sqlite3.Error:
+        return None
+    try:
+        if not _has(c, "regime"):
+            return None
+        hist = regime.history(c, n=2)
+    except sqlite3.Error as e:
+        log(f"push: regime: {e}")
+        return None
+    finally:
+        c.close()
+    if not hist:
+        return None
+
+    row = hist[-1]
+    pb = config.PLAYBOOK.get((row.get("trend"), row.get("vol"))) or {}
+    return {"ts": int(time.time() * 1000), "row": row,
+            "prev": hist[-2] if len(hist) > 1 else None,
+            "playbook": {"setups": list(pb.get("setups") or []),
+                         "size": pb.get("size"), "note": pb.get("note")},
+            "age": _age_days(row.get("d"))}
+
+
+def sectors_payload(db=DB, chart_days: int | None = None) -> dict | None:
+    """Xep hang nganh phien moi nhat + thay doi hang + lich su cho bieu do.
+
+    Lich su o dang CT (cot): {"days": [...], "series": {sym: [rank, ...]}} chu
+    khong phai 990 dict {d, sym, rank, composite}. Cung mot thong tin, nho hon
+    khoang mot bac do lon, va dung hinh dang ma bieu do can - khong co vong lap
+    gom nhom nao o phia trinh duyet.
+
+    `None` trong mot series = phien do khong co ma nay (VM tat, hoac ETF chua du
+    nen). Bieu do phai NGAT duong o do chu khong noi thang qua: noi thang qua la
+    ve ra mot lich su chua bao gio ton tai.
+    """
+    try:
+        import config
+        import sectors
+    except Exception as e:                                       # noqa: BLE001
+        log(f"push: khong import duoc sectors/config: {e}")
+        return None
+    n = int(config.NIGHTLY["chart_days"] if chart_days is None else chart_days)
+    try:
+        c = _con(db)
+    except sqlite3.Error:
+        return None
+    try:
+        if not _has(c, "sector_rank"):
+            return None
+        rows = sectors.load_rank(c)
+        if not rows:
+            return None
+        d = rows[0].get("d")
+        chg = sectors.changes(c, d)
+        hist = sectors.history(c, n)
+    except sqlite3.Error as e:
+        log(f"push: sectors: {e}")
+        return None
+    finally:
+        c.close()
+
+    days = sorted({r["d"] for r in hist})
+    at = {(r["d"], r["sym"]): r["rank"] for r in hist}
+    syms = [r["sym"] for r in rows]                 # thu tu hang cua hom nay
+    for s in sorted({r["sym"] for r in hist}):      # ma da roi khoi ro van phai ve
+        if s not in syms:
+            syms.append(s)
+    return {
+        "ts": int(time.time() * 1000), "d": d, "rows": rows,
+        # Khoa JSON phai la chuoi; changes() tra khoa int -> str() o day, va
+        # dashboard doc theo cung danh sach `wins` nay chu khong doan.
+        "chg": {s: {str(w): v for w, v in ws.items()} for s, ws in chg.items()},
+        "wins": [int(w) for w in config.SECTORS["change_wins"]],
+        "defensive": sectors.defensive_top(rows),
+        "hist": {"days": days,
+                 "series": {s: [at.get((x, s)) for x in days] for s in syms}},
+        "age": _age_days(d),
+    }
+
+
+def watchlist_payload(db=DB, top: int | None = None) -> dict | None:
+    """Danh sach theo doi swing: chi setup LEAD, kem co vi the cua hom nay.
+
+    Doc THANG tu bang chu khong qua setups.load_candidates(): ham do khoa theo
+    `sym`, nen mot ma vua la BO vua la LEAD (rat hay xay ra - ca hai deu doi ma
+    gan dinh) chi con mot dong.
+
+    `size` ghep vao tung dong chu khong de dashboard tu nhan: cho vi the la mot
+    quyet dinh cua playbook, va no phai di cung ma o dung cho nguoi doc nhin.
+
+    HAI CON SO VE CO VI THE, KHONG PHAI MOT:
+      `size`      he so cua o playbook dang ap dung (0.0 / 0.5 / 1.0 ...) - mot
+                  gia tri cho ca phien, la "hom nay duoc danh bao nhieu phan".
+      `size_pct`  co vi the CUOI CUNG cua tung ma, tinh tu rui ro 0.75% chia cho
+                  khoang cach stop, DA nhan `size` roi (plan.make(size_mult=)).
+    Nhan lai lan nua o dashboard hay o phan intraday la tu giam vi the xuong mot
+    nua ma khong ai thay. Cot can doc de vao lenh la `size_pct`.
+    """
+    try:
+        import config
+    except Exception:                                            # noqa: BLE001
+        return None
+    n = int(config.NIGHTLY["watch_top"] if top is None else top)
+    try:
+        c = _con(db)
+    except sqlite3.Error:
+        return None
+    try:
+        cols = ",".join(x for x in _pick(c, "candidates", CAND_COLS)
+                        if x != "setup")
+        rows = _rows(c, f"SELECT {cols} FROM candidates WHERE setup='LEAD' "
+                        f"ORDER BY quality DESC LIMIT ?", (n,))
+        if not rows:
+            return None
+        size = None
+        if _has(c, "regime"):
+            r = _one(c, "SELECT trend, vol, size FROM regime ORDER BY d DESC LIMIT 1")
+            if r:
+                pb = config.PLAYBOOK.get((r["trend"], r["vol"])) or {}
+                size = pb.get("size", r["size"])
+        tot = _one(c, "SELECT COUNT(*) n FROM candidates WHERE setup='LEAD'")
+    finally:
+        c.close()
+    out = [dict(r) for r in rows]
+    for x in out:
+        x["size"] = size
+    return {"ts": int(time.time() * 1000), "d": out[0].get("d"),
+            "rows": out, "total": tot["n"] if tot else len(out),
+            "size": size, "age": _age_days(out[0].get("d"))}
+
+
+def thresholds_payload() -> dict | None:
+    """Nguong DANG chay, chi doc. Khong doc DB - config.py la nguon duy nhat.
+
+    Ten khoa la `scanner:thresholds`, khong phai `scanner:config`: xem ghi chu o
+    dau muc nay. Day chinh cac dict dang chay (config.snapshot()) chu khong phai
+    mot ban mo ta viet tay, de bang tren dashboard sai thi la loi hien thi chu
+    khong bao gio la "file mo ta da cu".
+    """
+    try:
+        import config
+        return {"ts": int(time.time() * 1000), "config": config.snapshot()}
+    except Exception as e:                                       # noqa: BLE001
+        log(f"push: khong doc duoc config: {e}")
+        return None
 
 
 def rejects_payload(db=DB) -> dict | None:
@@ -431,10 +753,21 @@ def push_status(db=DB, dry: bool = False, force: bool = False) -> str:
 
 
 def push_all(db=DB, dry: bool = False, force: bool = False) -> dict:
-    """Snapshot nang, goi mot lan moi toi sau `setups.py --build`."""
+    """Snapshot nang, goi mot lan moi toi sau `setups.py --build`.
+
+    Thu tu co y: `status` truoc, vi no la khoa noi ra buoc nao do. Neu mot khoa
+    sau do qua to hay mang chet giua duong thi dashboard van biet lan chay nay
+    ket thuc the nao.
+    """
     day = dt.date.today().isoformat()
     out = {
         "status": push_status(db, dry, force),
+        # Bon khoa cua trang swing (Stage 4).
+        "regime": put("scanner:regime", regime_payload(db), force, dry),
+        "sectors": put("scanner:sectors", sectors_payload(db), force, dry),
+        "watchlist": put("scanner:watchlist", watchlist_payload(db), force, dry),
+        "thresholds": put("scanner:thresholds", thresholds_payload(), force, dry),
+        # Cac khoa cua phan trong phien (Phase 1-8), khong doi.
         "candidates": put("scanner:candidates", candidates_payload(db), force, dry),
         "rejects": put("scanner:rejects", rejects_payload(db), force, dry),
         f"alerts:{day}": put(f"scanner:alerts:{day}", alerts_payload(db, day),
@@ -516,14 +849,25 @@ def _cli() -> int:
 
 # ───────────────────────── selftest ─────────────────────────
 def _mkdb(p: Path) -> None:
-    """DB gia du de kiem payload: dung DDL that cua cac module."""
+    """DB gia du de kiem payload: dung DDL that cua cac module.
+
+    DDL that, khong phai ban go tay: mot cot bi doi ten trong regime.py hay
+    sectors.py thi test o day phai do, chu khong phai chay xanh roi dashboard
+    trong rong tren VM.
+    """
     import bars
+    import nightly
+    import regime
+    import sectors
     import setups
     import structure
     c = sqlite3.connect(p)
     c.executescript(bars.DDL)
     c.executescript(structure.DDL)
     c.executescript(setups.DDL)
+    c.executescript(regime.DDL)
+    c.executescript(sectors.DDL)
+    c.executescript(nightly.DDL)
     c.executescript("""
       CREATE TABLE IF NOT EXISTS alerts(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -551,6 +895,32 @@ def _mkdb(p: Path) -> None:
                   "'2026-09-12T14:00:00','2026-09-12T10:00:00','NEW','AAA',9.1,"
                   "20,0.06,3.2,1.1,0.2,5e6,'fresh','yahoo')")
         c.execute("INSERT INTO kv(k,v) VALUES('beat','{\"scans\": 12}')")
+        # LEAD: mot dong thu hai cho CUNG mot ma, de bat loi dung khoa `sym`.
+        c.execute("INSERT INTO candidates(sym,setup,d,ref_close,pivot,sma20,"
+                  "adv20,atr_pct,base_len,base_depth,off_high,rs_pct,dist_pivot,"
+                  "fund_ok,sector,rs21,rs63,quality,updated) VALUES('AAA','LEAD',"
+                  "'2026-09-12',20,21,19.8,800000,0.03,40,0.09,0.04,90,0.048,"
+                  "NULL,'XLK',0.05,0.12,8.5,'x')")
+        for i, (d, tr) in enumerate((("2026-09-11", "RANGE"),
+                                     ("2026-09-12", "UPTREND"))):
+            c.execute("INSERT INTO regime(d,trend,vol,slope_dir,px,sma50,sma200,"
+                      "slope50,atr14,atr_pct,atr_pct_avg,atr_ratio,playbook,"
+                      "size,bench,n_bars,updated) VALUES(?,?,'NORMAL','rising',"
+                      "660,640,600,0.018,6.6,0.01,0.0104,0.96,'BO,LEAD',1.0,"
+                      "'SPY',400,'x')", (d, tr))
+        for d in ("2026-09-11", "2026-09-12"):
+            for i, s in enumerate(("XLK", "XLF", "XLP"), 1):
+                c.execute("INSERT INTO sector_rank(d,sym,rank,composite,ret21,"
+                          "ret63,ret126,pct21,pct63,pct126,px,sma50,ema21,"
+                          "slope50,above_sma50,above_ema21,slope_up,n_bars,"
+                          "updated) VALUES(?,?,?,?,0.05,0.1,0.2,90,88,86,100,"
+                          "95,98,0.01,1,1,1,300,'x')",
+                          (d, s, i if d == "2026-09-12" else 4 - i,
+                           100.0 - i * 10))
+        c.execute("INSERT INTO night(run_id,day,bar,ok,code,sec,dry,stages,warn,"
+                  "updated) VALUES('2026-09-12T12:00:00+00:00','2026-09-12',"
+                  "'2026-09-11',1,0,12.3,0,"
+                  "'[{\"stage\":\"bars\",\"ok\":true}]','[]','x')")
     c.close()
 
 
@@ -583,7 +953,7 @@ def _smoke() -> int:
         s = status_payload(p, today="2026-09-14")
         ok(s["bars"]["syms"] == 1 and s["bars"]["age"] == 2, f"status bars: {s.get('bars')}")
         ok(s["struct"]["rows"] == 0, "struct rong van phai co mat")
-        ok(s["candidates"]["by_setup"] == {"BO": 1}, s.get("candidates"))
+        ok(s["candidates"]["by_setup"] == {"BO": 1, "LEAD": 1}, s.get("candidates"))
         ok(s["beat"] == {"scans": 12}, "beat phai duoc parse")
         ok(s["alerts_today"]["n"] == 0, "alert cua ngay khac khong tinh vao hom nay")
         s2 = status_payload(p, today="2026-09-12")
@@ -596,11 +966,84 @@ def _smoke() -> int:
            "alert chua co outcome van phai ra")
         ok(alerts_payload(p, "2026-01-01") is None, "ngay khong co alert -> None")
 
+        # Stage 4: bon khoa cua trang swing
+        rp = regime_payload(p)
+        ok(rp["row"]["trend"] == "UPTREND", f"regime row: {rp.get('row')}")
+        ok(rp["prev"]["trend"] == "RANGE", "phai gui ca phien truoc de so")
+        ok(rp["playbook"]["setups"] and rp["playbook"]["note"],
+           "playbook lay tu config, khong tu cot trong DB")
+
+        sp = sectors_payload(p)
+        ok([r["sym"] for r in sp["rows"]] == ["XLK", "XLF", "XLP"], sp["rows"])
+        ok(sp["defensive"] == ["XLP"], f"defensive: {sp['defensive']}")
+        ok(sp["hist"]["days"] == ["2026-09-11", "2026-09-12"], sp["hist"]["days"])
+        ok(sp["hist"]["series"]["XLK"] == [3, 1], sp["hist"]["series"])
+        ok(all(isinstance(k, str) for k in next(iter(sp["chg"].values()))),
+           "khoa JSON phai la chuoi")
+
+        wl = watchlist_payload(p)
+        ok([r["sym"] for r in wl["rows"]] == ["AAA"], "chi lay setup LEAD")
+        ok("setup" not in wl["rows"][0], "cot setup la du thua trong khoa nay")
+        ok(wl["rows"][0]["sector"] == "XLK", "cot sector cua Stage 3 phai co")
+        ok(wl["rows"][0]["size"] == 1.0, f"co vi the: {wl['rows'][0].get('size')}")
+
+        th = thresholds_payload()
+        ok(th["config"]["bench"] and th["config"]["playbook"], "thresholds")
+        ok(len(th["config"]["playbook"]) == 12, "12 o playbook")
+
+        # chuoi chay + co "so lieu cu". Chay THANH CONG luc thu Hai 12:00 UTC:
+        # phai la ngay lam viec, khong thi _biz_hours() dem ra 0 va con so 36
+        # gio khong con y nghia gi.
+        t0 = dt.datetime(2026, 9, 14, 12, tzinfo=dt.timezone.utc)   # thu Hai
+        cx = sqlite3.connect(p)
+        with cx:
+            cx.execute("INSERT INTO night(run_id,day,bar,ok,code,sec,dry,stages,"
+                       "warn,updated) VALUES(?,'2026-09-14','2026-09-11',1,0,9.0,"
+                       "0,'[{\"stage\":\"bars\",\"ok\":true}]','[]','x')",
+                       (t0.isoformat(),))
+        cx.close()
+        n1 = status_payload(p, now=t0 + dt.timedelta(hours=10))["night"]
+        ok(n1["last"]["run_id"] == t0.isoformat(), n1["last"])
+        ok(n1["stale"]["stale"] is False, f"10 gio chua tre: {n1['stale']}")
+        n2 = status_payload(p, now=t0 + dt.timedelta(hours=40))["night"]
+        ok(n2["stale"]["stale"] is True, f"40 gio phai tre: {n2['stale']}")
+
+        # Lan chay DO khong lam so lieu moi hon: `stale` phai tinh theo lan
+        # thanh cong, con `last` van la lan do de dashboard goi ten buoc.
+        cx = sqlite3.connect(p)
+        with cx:
+            cx.execute("INSERT INTO night(run_id,day,bar,ok,code,sec,dry,stages,"
+                       "warn,updated) VALUES(?,'2026-09-16','2026-09-15',0,1,3.0,"
+                       "0,'[{\"stage\":\"sectors\",\"ok\":false,\"err\":\"x\"},"
+                       "{\"stage\":\"setups\",\"ok\":false,\"blocked\":true}]',"
+                       "'[]','x')", ((t0 + dt.timedelta(days=2)).isoformat(),))
+        cx.close()
+        n3 = status_payload(p, now=t0 + dt.timedelta(days=2, hours=1))["night"]
+        ok(n3["last"]["ok"] == 0 and n3["last_ok"]["run_id"] == t0.isoformat(),
+           "phai giu ca lan cuoi va lan thanh cong cuoi")
+        ok(n3["failed"] == ["sectors"], f"failed: {n3.get('failed')}")
+        ok(n3["blocked"] == ["setups"], "buoc bi chan khong tinh la loi rieng")
+        ok(n3["stale"]["stale"] is True, f"lan do khong lam moi: {n3['stale']}")
+
+        # gio lam viec: bo cuoi tuan di
+        fri = dt.datetime(2026, 9, 11, 12, tzinfo=dt.timezone.utc)
+        ok(_biz_hours(fri, fri + dt.timedelta(days=3)) == 24.0,
+           "thu Sau 12:00 -> thu Hai 12:00 = 24 gio lam viec")
+        ok(_biz_hours(fri, fri + dt.timedelta(hours=2)) == 2.0, "trong ngay")
+        ok(_biz_hours(fri + dt.timedelta(days=3), fri) == 0.0, "lui thoi gian")
+        sat = dt.datetime(2026, 9, 12, 0, tzinfo=dt.timezone.utc)
+        ok(_biz_hours(sat, sat + dt.timedelta(days=2)) == 0.0, "ca cuoi tuan")
+        ok(_iso("rac") is None and _iso(None) is None, "_iso chiu rac")
+        ok(_iso("2026-09-14T12:00:00").tzinfo is not None, "_iso mac dinh UTC")
+
         # DB thieu bang: khong duoc sap
         q = Path(d) / "tron.db"
         sqlite3.connect(q).close()
         ok("bars" not in status_payload(q), "DB rong -> khong co khoa bars")
         ok(candidates_payload(q) is None, "khong co bang candidates -> None")
+        for f in (regime_payload, sectors_payload, watchlist_payload):
+            ok(f(q) is None, f"{f.__name__}: bang chua co -> None, khong sap")
+        ok("night" not in status_payload(q), "chua co bang night -> khong co khoa")
 
         # DB khong ton tai
         ok("db_error" in status_payload(Path(d) / "khong-co.db"), "DB thieu -> db_error")

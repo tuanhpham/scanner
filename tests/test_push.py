@@ -249,6 +249,80 @@ def test_candidates_cat_top_nhung_van_bao_tong():
         assert cp["by_setup"]["BO"][0]["sym"] == "AAA"    # quality 7.5, cao nhat
 
 
+def _lead(p: Path, **kw) -> None:
+    """Them mot dong LEAD co ke hoach lenh day du vao DB da dung san."""
+    row = {"sym": "LLL", "setup": "LEAD", "d": "2026-09-12", "ref_close": 100.0,
+           "pivot": 101.0, "quality": 9.0, "sector": "XLK", "atr_pct": 0.03,
+           "trigger": 101.1, "stop": 96.6, "target": 110.1, "stop_pct": 0.0445,
+           "risk_pct": 0.0075, "size_pct": 0.168, "updated": "x"}
+    row.update(kw)
+    cols = ",".join(row)
+    c = sqlite3.connect(p)
+    with c:
+        c.execute(f"INSERT INTO candidates({cols}) VALUES"
+                  f"({','.join('?' * len(row))})", tuple(row.values()))
+    c.close()
+
+
+def test_watchlist_mang_theo_ke_hoach_lenh():
+    """Ke hoach phai di TOI cho nguoi doc, khong chi nam trong DB.
+
+    `trigger/stop/target/size_pct` la ca ly do bang nay ton tai: quyet dinh duoc
+    lap tu dem truoc thi phai doc duoc tu dem truoc.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        p = _db(d)
+        _lead(p)
+        w = ph.watchlist_payload(p)
+        r = w["rows"][0]
+        assert r["sym"] == "LLL"
+        for k in ph.PLAN_COLS:
+            assert r[k] is not None, f"mat cot ke hoach `{k}`"
+        assert r["trigger"] == 101.1 and r["stop"] == 96.6
+
+
+def test_size_va_size_pct_la_hai_con_so_khac_nhau():
+    """`size` = he so cua o playbook; `size_pct` = co vi the CUOI CUNG (da nhan
+    he so do roi). Gop chung lai, hoac nhan chung voi nhau o dashboard, la tu
+    giam vi the mot cach khong ai thay."""
+    with tempfile.TemporaryDirectory() as d:
+        p = _db(d)                    # _mkdb() da co san mot dong regime
+        _lead(p)
+        w = ph.watchlist_payload(p)
+        assert w["size"] == 1.0                        # he so playbook
+        assert w["rows"][0]["size_pct"] == 0.168       # co vi the thuc te
+        assert "size_pct" in ph.PLAN_COLS and "size" not in ph.PLAN_COLS
+
+
+def test_db_cu_thieu_cot_ke_hoach_thi_bang_van_ra_chu_khong_bien_mat():
+    """push.py chay nhu mot tien trinh rieng voi setups.py: hai ben CO THE lech
+    phien ban trong vai gio sau khi deploy.
+
+    `_rows()` nuot sqlite3.Error va tra [] -> mot cau SELECT co cot thieu khong
+    bao loi, no lam CA bang watchlist bien mat khoi dashboard va doc giong het
+    mot dem khong co ma nao dat. Do la dung kieu that bai im lang ma ca he thong
+    nay duoc dung de chan.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "cu.db"
+        c = sqlite3.connect(p)
+        with c:      # so do `candidates` nhu TRUOC khi co ke hoach lenh
+            c.execute("""CREATE TABLE candidates(
+                sym TEXT, setup TEXT, d TEXT, ref_close REAL, pivot REAL,
+                sma20 REAL, adv20 REAL, atr_pct REAL, base_len INTEGER,
+                base_depth REAL, off_high REAL, rs_pct REAL, dist_pivot REAL,
+                fund_ok INTEGER, sector TEXT, rs21 REAL, rs63 REAL,
+                quality REAL, updated TEXT, PRIMARY KEY(sym, setup))""")
+            c.execute("INSERT INTO candidates(sym,setup,d,ref_close,quality,"
+                      "updated) VALUES('LLL','LEAD','2026-09-12',100,9.0,'x')")
+        c.close()
+        w = ph.watchlist_payload(p)
+        assert w and w["rows"][0]["sym"] == "LLL", "bang bien mat khong noi gi"
+        assert "trigger" not in w["rows"][0]      # thieu that thi thieu, khong bua
+        # Va bang candidates cung phai qua duoc.
+        assert ph.candidates_payload(p)["by_setup"]["LEAD"][0]["sym"] == "LLL"
+
+
 def test_alert_chua_co_outcome_van_ra():
     """LEFT JOIN, khong JOIN: alert vua gui la dong dang muon xem nhat."""
     with tempfile.TemporaryDirectory() as d:

@@ -337,6 +337,37 @@ def sync(db, symbols: list[str], period: str = DAILY_PERIOD,
     return stat
 
 
+def sync_list(limit: int = 0, quiet: bool = False) -> list[str]:
+    """Danh sach ma cho `--sync`: universe cua prep.py + SPY + 11 sector ETF.
+
+    Tach ra khoi main() de nightly.py dung DUNG danh sach nay. Ban sao thu hai
+    cua logic "them REGIME_SYMS" se thieu mot ma vao dung ngay ma no quan trong.
+
+    Goi prep.fetch_universe() nen CAN pandas: import muon, de `import bars` van
+    chay duoc tren may khong co pandas (structure.py, setups.py va toan bo
+    selftest phu thuoc vao dieu do).
+    """
+    import prep                          # dung lai fetch_universe() cua prep.py
+    import config
+    sl = list(prep.fetch_universe())
+    if limit:
+        sl = sl[:limit]
+        if not quiet:
+            print(f"CHE DO THU: {len(sl)} ma")
+    # SPY + 11 sector ETF phai co MAT du universe co tra ve hay khong, va phai
+    # them SAU khi cat --limit: fetch_universe() loc theo screener CO PHIEU nen
+    # khong dam bao co ETF, con --limit thi cang khong.
+    # Thieu SPY -> regime.py tra None; thieu mot sector -> percentile cua 10 cai
+    # con lai lech. Ca hai deu im lang, nen chan o day chu khong trong cho ai
+    # do nho ra.
+    them = [s for s in config.REGIME_SYMS if s not in set(sl)]
+    if them:
+        sl += them
+        if not quiet:
+            print(f"them {len(them)} ma cho regime/sector: {' '.join(them)}")
+    return sl
+
+
 # ───────────────────────── selftest ─────────────────────────
 def _fake(n: int = 40, px: float = 10.0, vol: float = 1e6,
           start: str = "2025-01-06") -> list[tuple]:
@@ -426,11 +457,7 @@ if __name__ == "__main__":
         _smoke()
         raise SystemExit(0)
 
-    import prep                          # dung lai fetch_universe() cua prep.py
-    sl = prep.fetch_universe()
-    if a.limit:
-        sl = sl[:a.limit]
-        print(f"CHE DO THU: {len(sl)} ma")
+    sl = sync_list(a.limit)
     st = sync(DB, sl, FULL_PERIOD if a.full else DAILY_PERIOD)
     print(f"XONG: {st['syms']} ma, {st['rows']} nen ghi, {st['fail']} that bai, "
           f"bo {st['bo_nen_dang_chay']} nen dang chay")

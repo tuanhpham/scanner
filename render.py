@@ -782,15 +782,27 @@ def _hard_cut(txt: str) -> str:
     return cut
 
 
-def render_alert(v: AlertView) -> str:
-    """Bo TUNG KHOI khi vuot SAFE_LEN, khong cat giua tag HTML."""
-    blocks = _blocks(v)
+def fit(blocks: list[tuple[int, list[str]]]) -> str:
+    """Ghep cac khoi, BO TUNG KHOI khi vuot SAFE_LEN, khong cat giua tag HTML.
+
+    Tach ra khoi render_alert() de render_night.py dung lai duoc: tin nhan buoi
+    sang cung co khoi bat buoc (bao cao tinh trang) va khoi bo duoc (bang nganh),
+    va viec cat cung mot tin nhan HTML theo hai cach khac nhau la cach chac chan
+    nhat de mot trong hai cach bi hong ma khong ai biet.
+
+    Khong sua `blocks` cua nguoi goi.
+    """
+    blocks = list(blocks)
     txt = _join(blocks)
     while len(txt) > SAFE_LEN and len(blocks) > 1:
         i = min(range(len(blocks)), key=lambda j: (blocks[j][0], -j))
         blocks.pop(i)
         txt = _join(blocks)
     return txt if len(txt) <= SAFE_LEN else _hard_cut(txt)
+
+
+def render_alert(v: AlertView) -> str:
+    return fit(_blocks(v))
 
 
 # ───────────────────────── keyboard ─────────────────────────

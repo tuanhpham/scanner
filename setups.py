@@ -34,6 +34,8 @@ import sys
 from pathlib import Path
 
 import bars
+import config
+import plan
 import structure
 
 ROOT = Path(__file__).resolve().parent
@@ -82,6 +84,11 @@ RV: dict = {
     "dvol": 2_000_000,
     "over_sma20": 0.0,          # phai lay lai sma20 sau nhieu tuan o duoi
 }
+
+# Stage 3. Nguong that nam trong config.py de bang "Config" tren dashboard hien
+# dung bo dang chay; o day chi la bi danh, va lead_candidate(m, g=...) van nhan
+# dict tuy y cho backtest.py quet.
+LEAD: dict = config.LEAD
 
 MAX_CAND = 500      # tran moi setup: gioi han so quote phai lay trong phien
 MAX_AGE = 5         # bang `struct`/`candidates` cu hon 5 ngay = khong dung nua
@@ -188,6 +195,66 @@ def rv_candidate(m: dict, g: dict = RV, fund: dict | None = None,
             "quality": _rv_quality(m, g, fund)}
 
 
+def lead_candidate(m: dict, g: dict = LEAD, sector: str | None = None,
+                   rej: dict | None = None) -> dict | None:
+    """Co phieu dan dat trong mot sector manh. Stage 3 phan swing.
+
+    Khac han BO/RV: day KHONG phai mot hinh mau ky thuat, ma la mot BO SAN
+    chat luong. Y tuong: neu dong tien dang chay vao XLK, thi nhung ma XLK vua
+    manh hon SPY vua o gan dinh vua du thanh khoan la nhung ma no chay vao.
+
+    `sector` do build() truyen tu holdings.py. None = khong biet ma nay thuoc
+    sector nao -> LOAI. "Khong biet" khong bao gio duoc coi la "thuoc top 3".
+    """
+    if not sector:
+        return _rej(rej, "khong biet sector")
+
+    px, adv50 = _num(m.get("px")), _num(m.get("adv50"))
+    if not px or px < g["min_px"]:
+        return _rej(rej, f"gia < ${g['min_px']:.0f}")
+
+    # San thanh khoan tinh bang TIEN, khong bang so co phieu: 1 trieu co phieu
+    # $3 va 1 trieu co phieu $300 la hai the gioi khac nhau. Day chinh la cho
+    # scanner trong phien hien tai bi ro ri co phieu rac.
+    dvol = (adv50 or 0.0) * px
+    if dvol < g["min_dollar_vol"]:
+        return _rej(rej, f"thanh khoan < ${g['min_dollar_vol'] / 1e6:.0f}M/phien")
+
+    rvol = _num(m.get("vol_ratio"))
+    if rvol is None or rvol < g["min_rvol"]:
+        return _rej(rej, f"rvol < {g['min_rvol']}")
+
+    atr = _num(m.get("atr_pct"))
+    if atr is None:
+        return _rej(rej, "khong do duoc bien do")
+    if atr < g["min_atr_pct"]:
+        return _rej(rej, f"bien do < {g['min_atr_pct']:.0%} (khong du dong)")
+    if atr > g["max_atr_pct"]:
+        return _rej(rej, f"bien do > {g['max_atr_pct']:.0%} (stop qua rong)")
+
+    rs21, rs63 = _num(m.get("rs21")), _num(m.get("rs63"))
+    if rs21 is None or rs63 is None:
+        # Thieu ma chuan trong kho nen. Xem structure.build().
+        return _rej(rej, "khong co so lieu RS (thieu ma chuan?)")
+    if rs21 < g["min_rs21"]:
+        return _rej(rej, "yeu hon SPY trong 21 phien")
+    if rs63 < g["min_rs63"]:
+        return _rej(rej, "yeu hon SPY trong 63 phien")
+
+    off = _num(m.get("off_high"))
+    if off is None or off > g["max_off_high"]:
+        return _rej(rej, f"cach dinh 52 tuan > {g['max_off_high']:.0%}")
+
+    return {"sym": m.get("sym"), "setup": "LEAD", "d": m.get("d"),
+            "ref_close": px, "pivot": _num(m.get("pivot")),
+            "sma20": _num(m.get("sma20")), "adv20": _num(m.get("adv20")),
+            "atr_pct": atr, "base_len": int(m.get("base_len") or 0),
+            "base_depth": _num(m.get("base_depth")), "off_high": off,
+            "rs_pct": _num(m.get("rs_pct")), "dist_pivot": _num(m.get("dist_pivot")),
+            "fund_ok": None, "sector": sector, "rs21": rs21, "rs63": rs63,
+            "quality": _lead_quality(m, g)}
+
+
 def _clip(x: float) -> float:
     return 0.0 if x < 0 else (1.0 if x > 1 else x)
 
@@ -219,12 +286,67 @@ def _rv_quality(m: dict, g: dict = RV, fund: dict | None = None) -> float:
     return round(0.45 * fs + 0.25 * deep + 0.15 * fresh + 0.15 * liq, 4)
 
 
+def _lead_quality(m: dict, g: dict = LEAD) -> float:
+    """0..1, CHI la diem RS - dung nhu spec: "xep survivors theo diem RS".
+
+    Co y khong cong them "gan dinh" hay "thanh khoan" vao day: chung da la BO
+    LOC o tren. Mot tieu chi vua dung de loai vua dung de cham diem se tinh hai
+    lan, va luc do khong con biet diem cao nghia la gi.
+
+    63 phien nang hon 21: xu huong ba thang la cai ta muon bam theo, con mot
+    thang chi de xac nhan no chua tat.
+    """
+    a = _clip((_num(m.get("rs21")) or 0.0) / g["rs_cap21"])
+    b = _clip((_num(m.get("rs63")) or 0.0) / g["rs_cap63"])
+    return round(0.6 * b + 0.4 * a, 4)
+
+
+def lead_pick(lst: list[dict], g: dict = LEAD,
+              rej: dict | None = None) -> list[dict]:
+    """Ap tran: top `per_sector` moi sector, roi `max_total` tong.
+
+    Hai tran chu khong mot: chi cat tong thi mot sector duy nhat co the chiem
+    het 10 cho, va luc do "dan dat o top 3 sector" thanh "dan dat o mot sector".
+    """
+    lst = sorted(lst, key=lambda c: (-c["quality"], c["sym"]))
+    dem: dict[str, int] = {}
+    giu = []
+    for c in lst:
+        s = c.get("sector") or "?"
+        if dem.get(s, 0) >= g["per_sector"]:
+            _rej(rej, f"da du {g['per_sector']} ma cua {s}")
+            continue
+        dem[s] = dem.get(s, 0) + 1
+        giu.append(c)
+    if len(giu) > g["max_total"]:
+        _rej(rej, f"qua tran {g['max_total']} ma tong")
+    return giu[:g["max_total"]]
+
+
 def scan(struct: dict[str, dict], fund: dict[str, dict] | None = None,
-         max_cand: int = MAX_CAND) -> tuple[list[dict], dict]:
-    """Ca bang `struct` -> danh sach candidate + bang ly do bi loai."""
+         max_cand: int = MAX_CAND,
+         lead_sectors: dict[str, str] | None = None,
+         size_mult: float = 1.0) -> tuple[list[dict], dict]:
+    """Ca bang `struct` -> danh sach candidate + bang ly do bi loai.
+
+    `lead_sectors` = {sym: sector} CHI gom nhung ma thuoc top 3 sector (xem
+    holdings.allowed()). None/rong -> khong sinh LEAD nao, va bang rejects ghi
+    ro ly do la "khong co danh sach sector" chu khong phai im lang.
+
+    `size_mult` = co vi the cua playbook theo trang thai thi truong hom nay
+    (config.PLAYBOOK[(trend, vol)]["size"]). Di thang vao plan.make() nen cot
+    `size_pct` trong DB da la co vi the CUOI CUNG - phan intraday khong phai
+    nhan lai voi cai gi, va do la mot phep nhan khong the bi quen.
+
+    Thuan: khong DB, khong mang. Nho vay backtest.py quet duoc nhieu bo nguong,
+    va test dung duoc fixture.
+    """
     fund = fund or {}
-    rej: dict = {"BO": {}, "RV": {}}
-    out: dict[str, list[dict]] = {"BO": [], "RV": []}
+    lead_sectors = lead_sectors or {}
+    rej: dict = {"BO": {}, "RV": {}, "LEAD": {}}
+    out: dict[str, list[dict]] = {"BO": [], "RV": [], "LEAD": []}
+    if not lead_sectors:
+        rej["LEAD"]["khong co danh sach sector"] = len(struct)
     for sym, m in struct.items():
         m = {**m, "sym": sym}
         c = bo_candidate(m, rej=rej["BO"])
@@ -233,6 +355,16 @@ def scan(struct: dict[str, dict], fund: dict[str, dict] | None = None,
         c = rv_candidate(m, fund=fund.get(sym), rej=rej["RV"])
         if c:
             out["RV"].append(c)
+        if lead_sectors:
+            c = lead_candidate(m, sector=lead_sectors.get(sym), rej=rej["LEAD"])
+            if c:
+                out["LEAD"].append(c)
+
+    # Ghi so ma qua duoc BO SAN truoc khi ap tran: neu 40 ma qua san ma chi
+    # nhan 10, bang rejects phai cho thay ca hai con so. Chi thay "10" thi
+    # khong biet la san chat qua hay tran chat qua.
+    rej["LEAD"]["_qua_san"] = len(out["LEAD"])
+    out["LEAD"] = lead_pick(out["LEAD"], rej=rej["LEAD"])
 
     rows = []
     for k, lst in out.items():
@@ -240,6 +372,21 @@ def scan(struct: dict[str, dict], fund: dict[str, dict] | None = None,
         rej[k]["_qua_loc"] = len(lst)
         rej[k]["_bi_cat_tran"] = max(0, len(lst) - max_cand)
         rows += lst[:max_cand]
+
+    # Ke hoach lenh, gan sau khi da cat tran: khong tinh cho nhung ma khong vao
+    # danh sach. `m` la dong struct goc, nen trigger/stop tinh tu nen quyet
+    # dinh chu khong tu cac gia tri da lam tron trong candidate.
+    dem_thieu = 0
+    for c in rows:
+        p = plan.make({**struct.get(c["sym"], {}), "sym": c["sym"]}, size_mult)
+        if p is None:
+            dem_thieu += 1
+        c.update(p or {"trigger": None, "stop": None, "target": None,
+                       "stop_pct": None, "risk_pct": None, "size_pct": None})
+    if dem_thieu:
+        # Khong chan, nhung phai dem duoc: mot ma khong co stop la mot ma phan
+        # intraday se BO QUA, va "bi bo qua im lang" la dung cai loi phai tranh.
+        rej["_khong_lap_duoc_ke_hoach"] = dem_thieu
     rej["_cho_fund"] = sum(1 for c in rows
                            if c["setup"] == "RV" and c["fund_ok"] is None)
     return rows, rej
@@ -338,49 +485,149 @@ def check(c: dict, q: dict, rej: dict | None = None) -> dict | None:
 # ───────────────────────── bang `candidates` ─────────────────────────
 COLS = ("setup", "d", "ref_close", "pivot", "sma20", "adv20", "atr_pct",
         "base_len", "base_depth", "off_high", "rs_pct", "dist_pivot",
-        "fund_ok", "quality")
+        "fund_ok", "sector", "rs21", "rs63", "quality",
+        # Ke hoach lenh, do plan.make() tinh tu nen quyet dinh. Phan intraday
+        # DOC sau cot nay va khong tinh lai bat cu cai gi - do la ca diem cua
+        # thiet ke: "toi khong ung bien giua phien, toi thuc hien mot quyet
+        # dinh da lap tu dem truoc".
+        "trigger", "stop", "target", "stop_pct", "risk_pct", "size_pct")
 
 DDL = """
 CREATE TABLE IF NOT EXISTS candidates(
   sym TEXT, setup TEXT, d TEXT,
   ref_close REAL, pivot REAL, sma20 REAL, adv20 REAL, atr_pct REAL,
   base_len INTEGER, base_depth REAL, off_high REAL, rs_pct REAL,
-  dist_pivot REAL, fund_ok INTEGER, quality REAL, updated TEXT,
+  dist_pivot REAL, fund_ok INTEGER,
+  sector TEXT, rs21 REAL, rs63 REAL,
+  quality REAL,
+  trigger REAL, stop REAL, target REAL,
+  stop_pct REAL, risk_pct REAL, size_pct REAL,
+  updated TEXT,
   PRIMARY KEY(sym, setup)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS ix_cand_setup ON candidates(setup, quality);
 """
 
 
+def _migrate(c: sqlite3.Connection) -> bool:
+    """Bang `candidates` thieu cot -> xoa va tao lai. Giong structure._migrate.
+
+    An toan vi build() da DELETE ca bang moi lan chay: day la anh chup cua mot
+    phien, khong phai du lieu tich luy. Lan build() ke tiep dien lai day du.
+    """
+    have = {x[1] for x in c.execute("PRAGMA table_info(candidates)")}
+    if not have or have >= set(COLS) | {"sym", "updated"}:
+        return False
+    log(f"  [setups] bang `candidates` thieu cot {sorted(set(COLS) - have)} "
+        f"-> xoa va tao lai")
+    with c:
+        c.execute("DROP TABLE candidates")
+    c.executescript(DDL)
+    return True
+
+
 def con(db=DB) -> sqlite3.Connection:
     c = bars.con(db) if not isinstance(db, sqlite3.Connection) else db
     c.executescript(DDL)
+    _migrate(c)
     return c
 
 
+def lead_ctx(db, cfg: dict | None = None) -> dict:
+    """Danh sach {sym: sector} cua top N sector, + ghi chu de bao cao.
+
+    Day la cho DUY NHAT Stage 3 doc DB ngoai `struct`: bang `sector_rank` cua
+    Stage 2 va file holdings tinh. Tach ra khoi scan() de scan() con thuan.
+    """
+    import holdings
+    import sectors
+
+    out: dict = {"map": {}, "top": [], "as_of": None, "warn": [], "d": None}
+    rows = sectors.load_rank(db)
+    if not rows:
+        out["warn"].append("bang `sector_rank` chua co dong nao -> chay "
+                           "`python sectors.py --build` truoc; khong co LEAD "
+                           "nao trong phien nay")
+        return out
+    top = int((cfg or config.SECTORS)["top_n"])
+    out["top"] = [r["sym"] for r in rows[:top]]
+    out["d"] = rows[0]["d"]
+
+    h = holdings.load()
+    out["as_of"] = h["as_of"]
+    if h["err"]:
+        out["warn"].append(f"holdings: {h['err']}")
+        return out
+    s = holdings.stale(h["as_of"])
+    if s:
+        out["warn"].append(s)
+    out["map"] = holdings.allowed(h["by_sym"], out["top"])
+    if not out["map"]:
+        out["warn"].append(f"khong co ma nao thuoc {' '.join(out['top'])} "
+                           f"trong file holdings")
+    return out
+
+
+def size_mult(db, override: float | None = None) -> tuple[float, str]:
+    """Co vi the cua playbook hom nay + mot cau giai thich (co dau).
+
+    Doc dong `regime` moi nhat. KHONG co dong nao -> tra 0.0, tuc la "lap ke
+    hoach nhung khong mo vi the moi". Do la lua chon co chu dinh: khong biet
+    trang thai thi truong thi mac dinh phai la dung ngoai, chu khong phai full
+    size. Mac dinh 1.0 o day se bien mot cron Stage 1 that bai thanh mot ngay
+    vao lenh het co ma khong co gi bao.
+    """
+    if override is not None:
+        return float(override), f"cỡ vị thế đặt tay: {float(override):.0%}"
+    try:
+        import regime
+        r = regime.latest(db)
+    except Exception as e:                              # noqa: BLE001 - xem duoi
+        # Bat rong o day la co chu dinh va co pham vi: regime.py import pandas.
+        # Tren may dev khong co pandas, `setups.py --build` van phai chay duoc.
+        # Ly do duoc GHI LAI chu khong bo qua.
+        return 0.0, f"không đọc được trạng thái thị trường ({type(e).__name__})"
+    if not r:
+        return 0.0, "chưa có bản ghi trạng thái thị trường → không mở vị thế mới"
+    pb = config.PLAYBOOK.get((r["trend"], r["vol"]))
+    if not pb:
+        return 0.0, f"không có dòng playbook cho {r['trend']}/{r['vol']}"
+    return float(pb["size"]), f"{r['trend']} · {r['vol']} → {pb['size']:.0%}"
+
+
 def build(db=DB, fund: dict[str, dict] | None = None,
-          max_cand: int = MAX_CAND) -> dict:
+          max_cand: int = MAX_CAND, dry: bool = False,
+          size: float | None = None) -> dict:
     """Bang `struct` -> bang `candidates`. Ghi de ca bang trong 1 transaction.
 
     Ly do ghi de thay vi upsert giong structure.build(): mot ma khong con nen
     thi phai BIEN MAT khoi danh sach theo doi. Upsert se de lai pivot cu cua
     hom qua va bot se canh mot muc gia khong con y nghia gi.
+
+    `dry=True`: tinh het, in het, khong ghi gi. Dung de xem mot thay doi nguong
+    lam gi TRUOC khi no thanh danh sach that.
     """
     c = con(db)
     st = structure.load_struct(c)
-    rows, rej = scan(st, fund, max_cand)
+    ctx = lead_ctx(c)
+    sz, sz_why = size_mult(c, size)
+    rows, rej = scan(st, fund, max_cand, lead_sectors=ctx["map"], size_mult=sz)
 
     now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     ins = (f"INSERT INTO candidates(sym,{','.join(COLS)},updated) "
            f"VALUES({','.join('?' * (len(COLS) + 2))})")
-    with c:
-        c.execute("DELETE FROM candidates")
-        c.executemany(ins, [(r["sym"], *(r.get(k) for k in COLS), now)
-                            for r in rows])
+    if not dry:
+        with c:
+            c.execute("DELETE FROM candidates")
+            c.executemany(ins, [(r["sym"], *(r.get(k) for k in COLS), now)
+                                for r in rows])
     if not isinstance(db, sqlite3.Connection):
         c.close()
-    n = {k: sum(1 for r in rows if r["setup"] == k) for k in ("BO", "RV")}
-    return {"struct": len(st), "BO": n["BO"], "RV": n["RV"],
-            "cho_fund": rej["_cho_fund"], "rej": rej}
+    n = {k: sum(1 for r in rows if r["setup"] == k) for k in ("BO", "RV", "LEAD")}
+    return {"struct": len(st), "BO": n["BO"], "RV": n["RV"], "LEAD": n["LEAD"],
+            "cho_fund": rej["_cho_fund"], "rej": rej,
+            "top_sector": ctx["top"], "holdings_as_of": ctx["as_of"],
+            "size_mult": sz, "size_why": sz_why,
+            "warn": ctx["warn"], "rows": rows, "dry": dry}
 
 
 def load_candidates(db=DB, setup: str | None = None,
@@ -391,6 +638,12 @@ def load_candidates(db=DB, setup: str | None = None,
     `max_age` la chot an toan that su can: struct/candidates dung yen vi cron
     chet thi bot van canh pivot cu suot nhieu tuan va khong co gi bao loi. Qua
     han -> tra ve rong, tot hon la alert dua tren nen da vo tu lau.
+
+    LUU Y khoa: dict nay khoa theo `sym`, con bang khoa theo (sym, setup). Mot
+    ma vua la BO vua la LEAD (rat hay xay ra: ca hai deu doi gan dinh) thi chi
+    con MOT dong o day. Truoc Stage 3 chuyen do khong the xay ra vi BO va RV
+    loai tru nhau. Nen luon truyen `setup=` khi can chac chan lay dung dong;
+    push.py doc truc tiep tu bang, khong qua ham nay.
     """
     c, mine = bars._c(db)
     try:
@@ -424,10 +677,12 @@ def _base_row(**kw) -> dict:
     """Mot dong `struct` cua ma dang o nen tich luy chat, sat pivot."""
     m = {"sym": "AAA", "d": "2024-06-03", "px": 20.0, "sma20": 19.8,
          "sma50": 19.0, "sma200": 17.0, "sma50_slope": 0.001,
-         "hi52": 21.0, "lo52": 12.0, "off_high": 0.048, "up_from_low": 0.67,
+         "hi52": 21.0, "lo52": 12.0, "hi1": 20.2, "lo1": 19.7,
+         "off_high": 0.048, "up_from_low": 0.67,
          "adv20": 800_000.0, "adv50": 900_000.0, "dryup": 0.8,
          "atr14": 0.4, "atr_pct": 0.02, "atr_contract": 0.6, "ret63": 0.1,
-         "rs_pct": 80.0, "base_len": 40, "base_depth": 0.09,
+         "ret21": 0.04, "rs_pct": 80.0, "rs21": 0.02, "rs63": 0.05,
+         "base_len": 40, "base_depth": 0.09,
          "base_slope": 0.0002, "base_dryup": 0.7, "pivot": 20.6,
          "dist_pivot": 0.03, "depth20": 0.05, "tight10": 0.01,
          "close_pos": 0.6, "gap": 0.0, "vol_ratio": 1.1,
@@ -438,12 +693,31 @@ def _base_row(**kw) -> dict:
 
 def _dip_row(**kw) -> dict:
     """Mot dong `struct` cua ma vua roi 70%, day 52 tuan cach day 8 phien."""
-    m = _base_row(px=6.0, sma20=6.4, sma50=8.0, sma200=12.0,
+    m = _base_row(px=6.0, sma20=6.4, sma50=8.0, sma200=12.0, hi1=6.1, lo1=5.9,
                   sma50_slope=-0.004, hi52=22.0, lo52=5.4, off_high=0.727,
-                  up_from_low=0.11, ret63=-0.45, rs_pct=3.0, base_len=0,
+                  up_from_low=0.11, ret63=-0.45, ret21=-0.20, rs_pct=3.0,
+                  rs21=-0.22, rs63=-0.50, base_len=0,
                   base_depth=None, base_slope=None, pivot=None,
                   dist_pivot=None, days_since_low=8, below20_streak=30,
                   adv20=1_200_000.0)
+    m.update(kw)
+    return m
+
+
+def _lead_row(**kw) -> dict:
+    """Mot dong `struct` cua co phieu dan dat: $60, thanh khoan $210M/phien.
+
+    Co y de gia cao va khoi luong tien lon: day la hinh mau ma scanner trong
+    phien hien tai KHONG BAO GIO tim thay, vi no xep hang theo % tang va co
+    phieu $60 khong tang 15% mot ngay.
+    """
+    m = _base_row(sym="LDR", px=60.0, sma20=58.0, sma50=54.0, sma200=45.0,
+                  hi1=60.5, lo1=59.1,
+                  sma50_slope=0.010, hi52=62.0, lo52=38.0, off_high=0.032,
+                  up_from_low=0.58, adv20=4_000_000.0, adv50=3_500_000.0,
+                  atr14=1.8, atr_pct=0.03, vol_ratio=1.8,
+                  ret63=0.22, ret21=0.09, rs_pct=95.0, rs21=0.05, rs63=0.11,
+                  base_len=25, base_depth=0.08, pivot=61.0, dist_pivot=0.016)
     m.update(kw)
     return m
 
@@ -483,6 +757,72 @@ def _smoke() -> None:
     assert (_bo_quality(_base_row(base_depth=0.06))
             > _bo_quality(_base_row(base_depth=0.18)))
 
+    # --- buoc 1: LEAD (Stage 3) ---
+    assert lead_candidate(_lead_row(), sector="XLK")["sector"] == "XLK"
+    # "khong biet sector" khong bao gio duoc coi la "thuoc top 3"
+    assert lead_candidate(_lead_row()) is None
+    assert lead_candidate(_lead_row(), sector="") is None
+    # tung san mot, va MOI san phai chan duoc rieng
+    assert lead_candidate(_lead_row(px=9.0), sector="XLK") is None, "duoi $10"
+    assert lead_candidate(_lead_row(adv50=200_000.0), sector="XLK") is None, \
+        "200k x $60 = $12M < san $20M"
+    assert lead_candidate(_lead_row(vol_ratio=1.1), sector="XLK") is None
+    assert lead_candidate(_lead_row(atr_pct=0.012), sector="XLK") is None, \
+        "qua yen"
+    assert lead_candidate(_lead_row(atr_pct=0.09), sector="XLK") is None, \
+        "qua dong"
+    assert lead_candidate(_lead_row(rs21=-0.01), sector="XLK") is None
+    assert lead_candidate(_lead_row(rs63=-0.01), sector="XLK") is None
+    assert lead_candidate(_lead_row(rs63=None), sector="XLK") is None, \
+        "thieu RS = LOAI, khong phai 'tam coi la 0'"
+    assert lead_candidate(_lead_row(off_high=0.30), sector="XLK") is None
+
+    # Day la khac biet cot loi so voi scanner hien tai. Hai kieu rac, hai san
+    # khac nhau chan:
+    #   1. $3 tang 15% -> chan boi san gia.
+    ly_do: dict = {}
+    assert lead_candidate(_lead_row(px=3.0, adv50=2_000_000.0), sector="XLK",
+                          rej=ly_do) is None
+    assert any("gia <" in k for k in ly_do), ly_do
+    #   2. $12, RS cao, sat dinh, nhung moi phien chi giao dich $12M -> khong co
+    #      to chuc nao trong do, spread rong, thoat lenh se truot. Day la kieu
+    #      rac kho thay hon, va no la ly do san tinh bang TIEN.
+    ly_do = {}
+    mong = _lead_row(px=12.0, adv50=1_000_000.0, sma50=10.5, hi52=12.4,
+                     off_high=0.03, atr_pct=0.05)
+    assert 1_000_000.0 * 12.0 < LEAD["min_dollar_vol"]
+    assert lead_candidate(mong, sector="XLK", rej=ly_do) is None
+    assert any("thanh khoan" in k for k in ly_do), ly_do
+
+    # BO candidate KHONG tu dong la LEAD: _base_row thanh khoan $18M
+    assert bo_candidate(_base_row()) and lead_candidate(_base_row(),
+                                                        sector="XLK") is None
+
+    # diem = RS, 63 phien nang hon 21
+    assert (_lead_quality(_lead_row(rs63=0.25))
+            > _lead_quality(_lead_row(rs63=0.05)))
+    assert _lead_quality(_lead_row(rs63=0.9)) == _lead_quality(
+        _lead_row(rs63=LEAD["rs_cap63"])), "phai cat tran"
+    manh21 = _lead_quality(_lead_row(rs21=LEAD["rs_cap21"], rs63=0.0))
+    manh63 = _lead_quality(_lead_row(rs21=0.0, rs63=LEAD["rs_cap63"]))
+    assert manh63 > manh21
+
+    # --- tran: 5 moi sector, 10 tong ---
+    nhieu = []
+    for i in range(8):
+        for s in ("XLK", "XLF", "XLE"):
+            nhieu.append(lead_candidate(
+                _lead_row(sym=f"{s}{i}", rs63=0.05 + i * 0.01), sector=s))
+    ly_do = {}
+    giu = lead_pick(nhieu, rej=ly_do)
+    assert len(giu) == LEAD["max_total"] == 10
+    dem: dict[str, int] = {}
+    for x in giu:
+        dem[x["sector"]] = dem.get(x["sector"], 0) + 1
+    assert max(dem.values()) <= LEAD["per_sector"], dem
+    assert len(dem) >= 2, "mot sector khong duoc chiem het 10 cho"
+    assert any("da du 5 ma" in k for k in ly_do), ly_do
+
     # --- buoc 2: BO ---
     c = bo_candidate(_base_row())
     q = {"px": 21.0, "vol": 2_000_000, "rvol": 2.5, "hi": 21.1, "lo": 20.2,
@@ -517,13 +857,28 @@ def _smoke() -> None:
     assert trig_rv(rv_candidate(_dip_row()), qr) is None
 
     # --- ly do bi loai co dem ---
-    rows, rej = scan({"AAA": _base_row(), "DIP": _dip_row(),
-                      "TIN": _base_row(base_len=5, base_depth=None,
-                                       pivot=None, dist_pivot=None)})
+    st_in = {"AAA": _base_row(), "DIP": _dip_row(),
+             "TIN": _base_row(base_len=5, base_depth=None,
+                              pivot=None, dist_pivot=None)}
+    rows, rej = scan(st_in)
     assert {r["sym"] for r in rows} == {"AAA", "DIP"}
     assert rej["BO"]["_qua_loc"] == 1 and rej["RV"]["_qua_loc"] == 1
     assert rej["BO"]["khong co nen tich luy"] == 2  # DIP + TIN
     assert rej["_cho_fund"] == 1
+    # khong co danh sach sector -> khong co LEAD, va NOI RO ly do
+    assert rej["LEAD"]["_qua_loc"] == 0
+    assert rej["LEAD"]["khong co danh sach sector"] == 3
+
+    # co danh sach sector -> LEAD chay, va chi voi nhung ma trong danh sach
+    rows2, rej2 = scan({**st_in, "LDR": _lead_row(), "NGO": _lead_row()},
+                       lead_sectors={"LDR": "XLK"})
+    ldr = [r for r in rows2 if r["setup"] == "LEAD"]
+    assert [r["sym"] for r in ldr] == ["LDR"], ldr
+    assert rej2["LEAD"]["khong biet sector"] == 4, rej2["LEAD"]
+    assert rej2["LEAD"]["_qua_san"] == 1 and rej2["LEAD"]["_qua_loc"] == 1
+    # LDR cung la BO candidate -> mot ma duoc phep o hai setup, hai dong rieng
+    assert {(r["sym"], r["setup"]) for r in rows2} >= {("LDR", "BO"),
+                                                       ("LDR", "LEAD")}
 
     # --- bang candidates ---
     db = Path(tempfile.mkdtemp()) / "t.db"
@@ -532,19 +887,47 @@ def _smoke() -> None:
     now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     ins = (f"INSERT INTO struct(sym,{','.join(structure.COLS)},updated) "
            f"VALUES({','.join('?' * (len(structure.COLS) + 2))})")
-    for sym, row in (("AAA", _base_row()), ("DIP", _dip_row())):
+    for sym, row in (("AAA", _base_row()), ("DIP", _dip_row()),
+                     ("LDR", _lead_row()), ("AAPL", _lead_row(sym="AAPL"))):
         st.execute(ins, (sym, *(row[k] for k in structure.COLS), now))
     st.commit()
 
+    # Chua co bang `sector_rank` -> khong LEAD nao, nhung phai CANH BAO chu
+    # khong im lang tra 0.
     r = build(c2)
-    assert r["BO"] == 1 and r["RV"] == 1 and r["cho_fund"] == 1, r
+    assert r["LEAD"] == 0 and any("sector_rank" in w for w in r["warn"]), r
+    assert r["top_sector"] == []
+
+    # Co xep hang sector -> LEAD chay. XLK trong top 3 nen AAPL... o day dung
+    # chinh LDR, va de duoc chon thi LDR phai co trong file holdings that.
+    import holdings as _h
+    import sectors as _sec
+    _sec.con(c2)
+    _sec.save(c2, "2024-06-03",
+              [{"sym": s, "rank": i, "composite": 100.0 - i * 10}
+               for i, s in enumerate(config.SECTOR_ETFS, 1)])
+    r = build(c2)
+    assert r["top_sector"] == list(config.SECTOR_ETFS[:3]), r["top_sector"]
+    assert r["holdings_as_of"] == _h.load()["as_of"]
+    # AAPL co trong holdings.csv o XLK -> duoc chon. LDR thi khong co o dau ca
+    # -> bi loai. Danh sach chi duoc lay tu thanh phan sector, khong tu ca kho
+    # nen: do la toan bo y nghia cua "co phieu dan dat trong sector manh".
+    assert r["LEAD"] == 1, r
+    assert _h.load()["by_sym"].get("AAPL") == "XLK"
+
+    assert r["BO"] == 3 and r["RV"] == 1 and r["cho_fund"] == 1, r
     got = load_candidates(c2, today="2024-06-05")
-    assert set(got) == {"AAA", "DIP"}
+    assert set(got) == {"AAA", "DIP", "LDR", "AAPL"}
+    # cot moi phai di duoc qua DB, khong chi ton tai trong bo nho
+    ld = load_candidates(c2, setup="LEAD", today="2024-06-05")["AAPL"]
+    assert ld["sector"] == "XLK"
+    assert abs(ld["rs63"] - 0.11) < 1e-9 and abs(ld["rs21"] - 0.05) < 1e-9
     assert got["AAA"]["setup"] == "BO" and got["AAA"]["pivot"] == 20.6
-    assert load_candidates(c2, setup="BO", today="2024-06-05").keys() == {"AAA"}
+    assert load_candidates(c2, setup="BO", today="2024-06-05").keys() == {
+        "AAA", "LDR", "AAPL"}
     # struct cu 3 tuan -> danh sach phai rong, khong duoc canh pivot da vo
     assert load_candidates(c2, today="2024-06-30") == {}
-    assert len(load_candidates(c2, today="2024-06-30", max_age=None)) == 2
+    assert len(load_candidates(c2, today="2024-06-30", max_age=None)) == 4
 
     # build lai khi khong con nen -> ma phai BIEN MAT, khong con pivot cu
     st.execute("UPDATE struct SET base_len=0, pivot=NULL, dist_pivot=NULL "
@@ -558,51 +941,84 @@ def _smoke() -> None:
 
 
 # ───────────────────────── CLI ─────────────────────────
+def _table(rows: list[dict], n: int = 25) -> None:
+    """Mot bang duy nhat cho ca --show va --dry-run.
+
+    Hai ham in rieng se lech nhau dung luc can so sanh "danh sach dry-run" voi
+    "danh sach da ghi".
+    """
+    def pc(x, dp=0, sign="") -> str:
+        return "-" if x is None else format(x, f"{sign}.{dp}%")
+
+    log(f"{'MA':<7}{'SET':<6}{'SECTOR':<7}{'NGAY':<12}{'GIA':>8}{'PIVOT':>8}"
+        f"{'CACH':>7}{'NEN':>5}{'ROI':>7}{'RS21':>7}{'RS63':>7}{'DIEM':>7}")
+    for r in rows[:n]:
+        log(f"{r['sym']:<7}{r['setup']:<6}{r.get('sector') or '-':<7}"
+            f"{r['d'] or '':<12}"
+            f"{r['ref_close'] or 0:>8.2f}{r['pivot'] or 0:>8.2f}"
+            f"{pc(r['dist_pivot'], 1, '+'):>7}{r['base_len'] or 0:>5}"
+            f"{pc(r['off_high']):>7}"
+            f"{pc(r.get('rs21'), 1, '+'):>7}{pc(r.get('rs63'), 1, '+'):>7}"
+            f"{r['quality'] or 0:>7.3f}")
+    log(f"\nTong {len(rows)} ma dang theo doi.")
+
+
 def _show(db, setup: str | None, n: int) -> None:
     rows = sorted(load_candidates(db, setup, max_age=None).values(),
                   key=lambda r: (r["setup"], -(r["quality"] or 0)))
     if not rows:
         log("Bang candidates rong. Chay: python setups.py --build")
         return
-    def pc(x, dp=0, sign="") -> str:
-        return "-" if x is None else format(x, f"{sign}.{dp}%")
-
-    log(f"{'MA':<7}{'SET':<5}{'NGAY':<12}{'GIA':>8}{'PIVOT':>8}"
-        f"{'CACH':>7}{'NEN':>5}{'ROI':>7}{'RS':>5}{'DIEM':>7}")
-    for r in rows[:n]:
-        rs = r["rs_pct"]
-        log(f"{r['sym']:<7}{r['setup']:<5}{r['d'] or '':<12}"
-            f"{r['ref_close'] or 0:>8.2f}{r['pivot'] or 0:>8.2f}"
-            f"{pc(r['dist_pivot'], 1, '+'):>7}{r['base_len'] or 0:>5}"
-            f"{pc(r['off_high']):>7}"
-            f"{('-' if rs is None else f'{rs:.0f}'):>5}"
-            f"{r['quality'] or 0:>7.3f}")
-    log(f"\nTong {len(rows)} ma dang theo doi.")
+    _table(rows, n)
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--build", action="store_true", help="quet struct -> candidates")
-    ap.add_argument("--show", nargs="?", const="", help="xem danh sach (BO/RV)")
+    ap.add_argument("--dry-run", action="store_true", dest="dry",
+                    help="tinh va in het, khong ghi bang candidates")
+    ap.add_argument("--show", nargs="?", const="",
+                    help="xem danh sach (BO/RV/LEAD)")
     ap.add_argument("--n", type=int, default=25)
+    ap.add_argument("--db", default=str(DB))
     args = ap.parse_args()
 
-    if not args.build and args.show is None:
+    if not args.build and not args.dry and args.show is None:
         _smoke()
         return 0
 
-    if args.build:
-        r = build(DB)
-        log(f"struct: {r['struct']} ma -> BO {r['BO']}, RV {r['RV']} "
-            f"(cho so lieu co ban: {r['cho_fund']})")
-        for k in ("BO", "RV"):
+    db = Path(args.db)
+    if args.build or args.dry:
+        r = build(db, dry=args.dry)
+        log(f"struct: {r['struct']} ma -> BO {r['BO']}, RV {r['RV']}, "
+            f"LEAD {r['LEAD']} (cho so lieu co ban: {r['cho_fund']})")
+        log(f"top sector: {' '.join(r['top_sector']) or '(chua co)'}"
+            f"   holdings as_of {r['holdings_as_of'] or '?'}")
+        for w in r["warn"]:
+            log(f"  canh bao: {w}")
+        for k in ("BO", "RV", "LEAD"):
+            rj = r["rej"][k]
             log(f"\nLy do bi loai ({k}):")
-            for why, cnt in sorted(r["rej"][k].items(), key=lambda t: -t[1]):
+            for why, cnt in sorted(rj.items(), key=lambda t: -t[1]):
                 if not why.startswith("_"):
                     log(f"  {why:<45}{cnt:>6}")
+            if k == "LEAD":
+                # Hai con so nay phai in canh nhau: "qua san" la bo loc chat hay
+                # long, "nhan" la tran chat hay long. Chi thay mot con so thi
+                # khong biet nen sua cai nao.
+                log(f"  {'-> qua het san chat luong':<45}"
+                    f"{rj.get('_qua_san', 0):>6}")
+                log(f"  {'-> nhan vao danh sach (sau khi ap tran)':<45}"
+                    f"{rj.get('_qua_loc', 0):>6}")
+        if args.dry:
+            ld = sorted((x for x in r["rows"] if x["setup"] == "LEAD"),
+                        key=lambda x: -x["quality"])
+            log("\nDANH SACH LEAD:")
+            _table(ld, args.n)
+            log("\n(--dry-run: khong ghi bang candidates)")
     if args.show is not None:
         setup = args.show.upper() or None
-        _show(DB, setup, args.n)
+        _show(db, setup, args.n)
     return 0
 
 

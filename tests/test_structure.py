@@ -207,6 +207,111 @@ def test_build_va_load_struct():
     assert d["BOO"]["rs_pct"] == 100.0 and d["DIP"]["rs_pct"] == 0.0
 
 
+# ───────────────────── Stage 3: RS so voi ma chuan ─────────────────────
+def test_rs_la_loi_nhuan_vuot_troi_so_voi_ma_chuan():
+    """rs21/rs63 = ret cua ma TRU ret cua SPY, cung cua so, cung nen quyet dinh.
+
+    Doi so voi `rs_pct`: rs_pct la percentile so voi cac ma KHAC trong universe;
+    rs21/rs63 la chenh lech so voi THI TRUONG. Hai ma cung yeu deu co rs_pct 50
+    nhung rs63 am - va Stage 3 can cai thu hai.
+    """
+    cf = _util.need("config")
+    manh = _ser([(100.0, 150.0, 200)])
+    yeu = _ser([(100.0, 105.0, 200)])
+    ma_chuan = _ser([(400.0, 460.0, 200)])
+    db = _db({"UP": manh, "DOWN": yeu, cf.BENCH: ma_chuan})
+    s.build(db)
+    d = s.load_struct(db)
+
+    bm = s.metrics(ma_chuan)
+    for sym in ("UP", "DOWN"):
+        m = s.metrics(manh if sym == "UP" else yeu)
+        for w in (21, 63):
+            assert abs(d[sym][f"rs{w}"]
+                       - (m[f"ret{w}"] - bm[f"ret{w}"])) < 1e-12, (sym, w)
+    assert d["UP"]["rs63"] > 0 > d["DOWN"]["rs63"]
+    # ma chuan so voi chinh no = 0 dung bang, khong phai xap xi
+    assert d[cf.BENCH]["rs21"] == 0.0 and d[cf.BENCH]["rs63"] == 0.0
+
+
+def test_khong_co_ma_chuan_thi_rs_la_null_chu_khong_phai_0():
+    """Thieu SPY trong kho nen -> rs21/rs63 = None, khong phai 0.
+
+    Day la test quan trong nhat cua phan Stage 3. Neu de la 0 thi CA universe
+    "khong yeu hon SPY" va di qua het bo loc RS - danh sach "co phieu dan dat"
+    bien thanh danh sach ma bat ky, va khong co gi trong so lieu cho thay.
+    """
+    db = _db({"AAA": _ser([(10.0, 20.0, 200)]),
+              "BBB": _ser([(10.0, 8.0, 200)])})
+    s.build(db)
+    d = s.load_struct(db)
+    for sym in ("AAA", "BBB"):
+        assert d[sym]["rs21"] is None and d[sym]["rs63"] is None, sym
+        assert d[sym]["ret21"] is not None, "ret thi van do duoc"
+
+
+def test_ret21_khong_tinh_nen_dang_chay_va_khop_dinh_nghia():
+    ser = _ser([(10.0, 10.0, 100)])
+    ser.append(Bar("2024-05-01", 10.0, 10.0, 10.0, 12.0, 1e6))
+    m = s.metrics(ser)
+    # ret21 = px / close cua 21 phien truoc - 1, lay tren chuoi DA DONG CUA
+    assert abs(m["ret21"] - (ser[-1].c / ser[-22].c - 1.0)) < 1e-12
+    # them nen tuong lai khong doi ret21 cua phien cu
+    assert s.metrics(ser + [Bar("2024-05-02", 12.0, 20.0, 12.0, 19.0, 9e6)]
+                     )["ret21"] != m["ret21"]
+    assert s.metrics((ser + [Bar("2024-05-02", 12.0, 20.0, 12.0, 19.0, 9e6)]
+                      )[:-1])["ret21"] == m["ret21"]
+
+
+def test_ret21_thieu_nen_thi_none():
+    assert s.metrics(_ser([(10.0, 11.0, 80)]))["ret21"] is not None
+    ngan = s.metrics(_ser([(10.0, 11.0, 30)]))
+    assert ngan is None or ngan["ret21"] is not None
+
+
+# ───────────────────── Stage 3: EMA ─────────────────────
+def test_ema_tre_sau_gia_va_nhanh_hon_sma_khi_gia_nhay():
+    ramp = [float(i) for i in range(1, 61)]
+    e = s._ema(ramp, 21)
+    assert e[:20] == [None] * 20, "chua du nen thi None"
+    assert e[-1] < ramp[-1], "EMA phai tre sau gia trong xu huong tang"
+    # Tren duong tang DEU, EMA va SMA tre nhu nhau: (1-k)/k = (n-1)/2 = 10 phien.
+    # "EMA nhanh hon" chi the hien khi gia NHAY, khong phai khi gia tang deu.
+    assert abs(e[-1] - s._sma(ramp, 21)[-1]) < 0.5
+    nhay = [10.0] * 40 + [20.0] * 5
+    assert s._ema(nhay, 21)[-1] > s._sma(nhay, 21)[-1]
+    # mam la SMA cua n nen dau, khong phai vals[0]
+    assert abs(e[20] - sum(ramp[:21]) / 21) < 1e-12
+    assert s._ema([1.0, 2.0], 5) == [None, None]
+    assert s._ema([], 5) == [] and s._ema([1.0], 0) == [None]
+
+
+# ───────────────────── Stage 3: doi luoc do bang ─────────────────────
+def test_migrate_bang_struct_cu_thi_tinh_lai_khong_phai_bao_loi():
+    """Bang `struct` cua ban cu (thieu ret21/rs21/rs63) -> DROP va tinh lai.
+
+    An toan vi `struct` la so lieu DAN XUAT tu `bars`, va build() ghi de ca bang
+    moi lan chay. Tu dong chu khong phai mot buoc trong README: buoc trong README
+    se bi quen dung mot lan, luc 08:00 tren VM.
+    """
+    ser = _ser([(10.0, 12.0, 200)])
+    db = _db({"AAA": ser})
+    c = s.con(db)
+    cu = [x for x in s.COLS if x not in ("ret21", "rs21", "rs63")]
+    c.executescript(
+        "DROP TABLE struct;"
+        f"CREATE TABLE struct(sym TEXT PRIMARY KEY,{','.join(cu)},updated TEXT);")
+    c.commit()
+    assert s._migrate(c) is True
+    have = {r[1] for r in c.execute("PRAGMA table_info(struct)")}
+    assert set(s.COLS) | {"sym", "updated"} == have
+    assert s._migrate(c) is False, "chay lai khong duoc xoa nua"
+    # va van tinh lai duoc tu `bars`
+    s.build(c)
+    assert s.load_struct(c)["AAA"]["ret21"] is not None
+    c.close()
+
+
 def test_build_ghi_de_khong_gop_hai_phien():
     ser = _ser([(10.0, 10.0, 80)])
     db = _db({"AAA": ser})
