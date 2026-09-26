@@ -436,6 +436,16 @@ def _smoke() -> None:
 
 
 def main() -> int:
+    # render.py va render_night.py deu lam viec nay o __main__; module nay thi
+    # khong, nen tren terminal Windows (cp1252 mac dinh) no chet o dong dau tien
+    # vi mot chu 🟢 - tuc la cach xem tin nhan re nhat lai la cach duy nhat
+    # khong chay duoc o day. Tin nhan Telegram thi luon co emoji, khong tranh
+    # duoc; cai tranh duoc la de stdout o mot encoding khong ta noi chung.
+    import sys
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        pass
     for ten, txt in _demo():
         print(f"\n{'=' * 60}\n{ten}  ({len(txt)} ky tu)\n{'=' * 60}\n{txt}")
     print()
