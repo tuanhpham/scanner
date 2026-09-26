@@ -44,7 +44,6 @@ DAILY_PERIOD = "1mo"   # thua ra de bit lo hong khi cron chet vai ngay
 ET = "America/New_York"
 
 DDL = """
-PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS bars(
   sym TEXT NOT NULL, d TEXT NOT NULL,
   o REAL, h REAL, l REAL, c REAL, ac REAL, v REAL,
@@ -66,10 +65,76 @@ class Bar(NamedTuple):
 
 
 # ───────────────────────── ket noi ─────────────────────────
+def wal(c: sqlite3.Connection, ms: int = 500) -> str:
+    """Bat WAL neu bat duoc, va tra ve che do THAT SU dang co.
+
+    Tach ra khoi DDL, va bat het loi, vi mot ly do cu the: doi journal_mode can
+    quyen doc-ghi doc quyen trong mot khoanh khac, nen khi con ket noi khac dang
+    mo file thi `PRAGMA journal_mode=WAL` NEM `database is locked`. Truoc day
+    dong pragma do nam trong DDL cua con(), tuc la:
+
+      - tren VM co main.py chay 24/7 (giu baseline.db mo) va watchd.py giu mot
+        ket noi ca phien, lan doi che do KHONG BAO GIO thanh cong;
+      - va vi no nem, `bars.con()` chet NGAY LUC MO KET NOI. Tuc la `python
+        nightly.py` bao "database is locked" o buoc `bars` truoc khi tai mot nen
+        nao, va cung loi do o `save_run` - nen ca bao cao that bai cung khong
+        ghi duoc. Hai trieu chung, mot dong pragma.
+
+    Khong bat duoc WAL thi van chay duoc, nen day khong phai loi. Nhung PHAI noi
+    ra: o che do rollback journal, nguoi ghi can khoa EXCLUSIVE luc commit nen
+    mot nguoi DOC bat ky cung chan no lai - va nguoc lai. Do la cach de nhat de
+    `bars.sync` (chay nhieu phut, commit tung batch) het 30 giay busy_timeout
+    tren mot may co main.py ghi moi 20 giay va watchd.py doc lien tuc. Trong WAL
+    thi khong ai cho ai. Dung `scripts/db_lock.py` de xem che do that su.
+
+    Do duoc (sqlite 3.x, xem tests/test_bars.py): doi che do CHI hong khi mot
+    ket noi khac dang mo transaction - mot ket noi mo nhung roi thi khong chan.
+    Va khi DB da o WAL thi pragma nay la no-op, khong bao gio nem.
+
+    Hai chi tiet quyet dinh cach viet ham nay:
+
+      1. Doc che do TRUOC. Da o WAL - truong hop binh thuong - thi khong cham
+         vao pragma ghi nao ca, va con() khong ton them gi.
+      2. Khi phai thu doi, ha busy_timeout xuong `ms` roi tra lai. Pragma nay CO
+         ton trong busy_timeout, nen voi 30000 thi mot lan doi that bai treo
+         DUNG 30 giay - roi con() lai goi wal() lan nua de bao che do, thanh 60.
+         Do la ly do that su cua "structure LOI 43.0s": phan lon 43 giay do la
+         ngoi cho mot pragma khong bao gio thanh cong, khong phai ghi du lieu.
+    """
+    try:
+        m = str(c.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+    except sqlite3.Error:
+        return "?"
+    if m == "wal":
+        return m
+    cu = 30000
+    try:
+        cu = int(c.execute("PRAGMA busy_timeout").fetchone()[0])
+    except (sqlite3.Error, TypeError, ValueError):
+        pass
+    try:
+        c.execute(f"PRAGMA busy_timeout={int(ms)}")
+        c.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:
+        pass                          # ket noi khac dang mo transaction
+    finally:
+        try:
+            c.execute(f"PRAGMA busy_timeout={cu}")
+        except sqlite3.Error:
+            pass
+    try:
+        return str(c.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+    except sqlite3.Error:
+        return "?"
+
+
 def con(db: str | Path = DB) -> sqlite3.Connection:
     Path(db).parent.mkdir(parents=True, exist_ok=True)
     c = sqlite3.connect(str(db), timeout=30)
     c.execute("PRAGMA busy_timeout=30000")
+    if (m := wal(c)) != "wal":
+        log(f"  [bars] ⚠️ baseline.db dang o journal_mode={m}, khong phai wal: "
+            f"nguoi ghi se chan nguoi doc. Chay `python scripts/db_lock.py`.")
     c.executescript(DDL)
     return c
 

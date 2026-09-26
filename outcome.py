@@ -58,7 +58,6 @@ FILL_TOL = 240       # giay: cua so cho phep khi dien px15/px60 tu vong quet
 BUCKETS = ((7.0, 8.0), (8.0, 9.0), (9.0, 10.0), (10.0, 12.0), (12.0, 1e9))
 
 DDL = """
-PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS outcome(
   sym TEXT, day TEXT, alert_ts INTEGER, score REAL, level INTEGER, rvol REAL,
   px0 REAL, px15 REAL, px60 REAL, px_close REAL,
@@ -72,6 +71,14 @@ def _con(db: str | Path) -> sqlite3.Connection:
     Path(db).parent.mkdir(parents=True, exist_ok=True)
     c = sqlite3.connect(str(db), timeout=15)
     c.execute("PRAGMA busy_timeout=15000")
+    # Qua bars.wal(): pragma doi journal_mode nem `database is locked` khi con
+    # ket noi khac dang mo transaction, va no treo het busy_timeout truoc khi
+    # nem. Xem bars.wal() cho ca cau chuyen.
+    try:
+        import bars
+        bars.wal(c)
+    except Exception:                 # noqa: BLE001
+        pass
     c.executescript(DDL)
     return c
 

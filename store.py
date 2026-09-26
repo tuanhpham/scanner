@@ -21,7 +21,6 @@ from pathlib import Path
 log = print          # main.py co the gan lai: store.log = log
 
 DDL = """
-PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS alert_msg(
   sym TEXT, day TEXT, message_id INTEGER, snap TEXT, ts TEXT,
   PRIMARY KEY(sym, day));
@@ -35,6 +34,16 @@ def _con(db: str | Path) -> sqlite3.Connection:
     Path(db).parent.mkdir(parents=True, exist_ok=True)
     c = sqlite3.connect(str(db), timeout=15)
     c.execute("PRAGMA busy_timeout=15000")
+    # Qua bars.wal() chu khong phai mot dong trong DDL: pragma doi journal_mode
+    # NEM `database is locked` khi con ket noi khac dang mo transaction, va no
+    # ton trong busy_timeout nen no treo DU 15 giay truoc khi nem. Ham nay chay
+    # moi 20 giay (main.py ghi khoa `beat`), nen mot dong pragma dat sai cho lam
+    # nhip tim cua dashboard vua cham hon chu ky cua no, vua mat han.
+    try:
+        import bars
+        bars.wal(c)
+    except Exception:                 # noqa: BLE001
+        pass
     c.executescript(DDL)
     return c
 

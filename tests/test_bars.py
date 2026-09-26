@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime as dt
 import tempfile
+import time
 from pathlib import Path
 
 import _util
@@ -190,6 +191,78 @@ def test_rows_of_index_khong_phai_timestamp():
 
 def test_rows_of_khong_co_cot_close():
     assert b._rows_of(_DF({"Volume": [1.0]}, [dt.datetime(2025, 1, 2)])) == []
+
+
+# ───────────────────────── che do journal ─────────────────────────
+def test_con_bat_wal():
+    """WAL la thu duy nhat cho nguoi doc va nguoi ghi song song tren baseline.db
+    - main.py ghi khoa `beat` moi 20 giay trong khi bars.sync chay nhieu phut."""
+    c = b.con(_db())
+    try:
+        assert c.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+    finally:
+        c.close()
+
+
+def test_doi_wal_hong_thi_van_mo_duoc_ket_noi():
+    """BUG THAT: `PRAGMA journal_mode=WAL` tung nam trong DDL cua con().
+
+    Doi journal_mode can quyen doc-ghi doc quyen mot khoanh khac, nen khi con
+    ket noi khac dang mo file thi pragma do NEM `database is locked`. Nam trong
+    executescript(DDL) thi no lam `bars.con()` chet NGAY LUC MO KET NOI: tren VM
+    co main.py chay 24/7, `python nightly.py` bao "database is locked" o buoc
+    `bars` truoc khi tai mot nen nao, VA `save_run` cung khong ghi noi bao cao
+    that bai - hai trieu chung tu mot dong pragma.
+    """
+    import sqlite3
+
+    db = _db()
+    c0 = b.con(db)                     # tao bang truoc, giong DB that tren VM
+    c0.close()
+    # Dung dieu kien lam pragma hong: DB KHONG o WAL (mac dinh cua sqlite;
+    # baseline.db do main.py tao, va DDL cua main.py khong co pragma nao), va
+    # mot tien trinh khac dang giu mot transaction - watchd.py giu ket noi ca
+    # phien, main.py ghi moi 20 giay.
+    doi = sqlite3.connect(str(db), isolation_level=None)
+    doi.execute("PRAGMA journal_mode=DELETE")
+    doi.close()
+
+    giu = sqlite3.connect(str(db), timeout=1, isolation_level=None)
+    giu.execute("PRAGMA busy_timeout=200")
+    giu.execute("BEGIN")
+    giu.execute("SELECT * FROM bars").fetchall()      # transaction doc dang mo
+    try:
+        # Tien de cua test: o dieu kien nay pragma doi che do THAT SU nem loi.
+        # Assert no ra day, khong thi test thanh mot cau khong kiem duoc gi.
+        thu = sqlite3.connect(str(db), timeout=1)
+        thu.execute("PRAGMA busy_timeout=200")
+        try:
+            thu.execute("PRAGMA journal_mode=WAL")
+            raise AssertionError("pragma doi che do dang le phai nem khi co "
+                                 "transaction khac dang mo")
+        except sqlite3.OperationalError as e:
+            assert "locked" in str(e).lower(), e
+        finally:
+            thu.close()
+
+        # Va bars.con() thi van phai mo duoc, dung duoc, va mo NHANH. Pragma doi
+        # che do CO ton trong busy_timeout: de nguyen 30000 thi mot lan doi that
+        # bai treo dung 30 giay, va do la phan lon cua "structure LOI 43.0s".
+        t0 = time.time()
+        c = b.con(db)
+        mo = time.time() - t0
+        try:
+            assert c.execute("SELECT COUNT(*) FROM bars").fetchone()[0] == 0
+            assert mo < 5.0, f"con() treo {mo:.1f}s cho mot pragma khong thanh cong"
+            assert b.wal(c) == "delete", "doi khong duoc thi phai bao dung"
+            # busy_timeout phai tra lai 30 giay: ha xuong chi de thu doi che do,
+            # con moi lenh ghi that thi van can cho du.
+            assert c.execute("PRAGMA busy_timeout").fetchone()[0] == 30000
+        finally:
+            c.close()
+    finally:
+        giu.execute("ROLLBACK")
+        giu.close()
 
 
 if __name__ == "__main__":
