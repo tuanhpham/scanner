@@ -161,10 +161,18 @@ def sess_of(ck, now: dt.datetime | None = None) -> dict:
 
 # ───────────────────────── gui ─────────────────────────
 async def tg_send(text: str, loud: bool = False, dry: bool = False,
-                  lg: logging.Logger | None = None) -> bool:
-    """True = da den tay nguoi doc. Chi khi True moi duoc ghi 'da canh bao'."""
+                  lg: logging.Logger | None = None,
+                  markup: dict | None = None) -> bool:
+    """True = da den tay nguoi doc. Chi khi True moi duoc ghi 'da canh bao'.
+
+    `markup` la inline_keyboard (nut "Bang dieu khien"). No nam NGOAI than tin
+    nhan nen --dry-run phai in rieng, khong thi chay thu se khong thay no ton
+    tai va bug "mat nut" chi lo ra tren Telegram that.
+    """
     if dry:
         print(f"\n{'─' * 60}\n{text}\n")
+        for row in (markup or {}).get("inline_keyboard") or []:
+            print("  [ " + " ] [ ".join(b.get("text", "?") for b in row) + " ]")
         return True
     import tgapi
     if lg:
@@ -173,7 +181,7 @@ async def tg_send(text: str, loud: bool = False, dry: bool = False,
         if lg:
             lg.error("tgapi: chua cau hinh TG_TOKEN/TG_CHAT_ID — khong gui duoc")
         return False
-    return bool(await tgapi.send(text, loud=loud))
+    return bool(await tgapi.send(text, markup, loud=loud))
 
 
 # ───────────────────────── mot vong ─────────────────────────
@@ -182,8 +190,8 @@ async def tick(c: sqlite3.Connection, prov, ctx: dict, sess: dict,
                lg: logging.Logger | None = None) -> dict:
     """Mot vong quet: lay gia -> do luat -> loc spam -> gui -> ghi.
 
-    `send(text, loud)` duoc TIEM VAO de test khong can mang. Tra ve mot ban tom
-    tat de vong ngoai ghi log va quyet dinh co lui nhip khong.
+    `send(text, loud, markup)` duoc TIEM VAO de test khong can mang. Tra ve mot
+    ban tom tat de vong ngoai ghi log va quyet dinh co lui nhip khong.
     """
     g = config.INTRADAY if g is None else g
     d = sess.get("d") or ctx["day"]
@@ -208,10 +216,9 @@ async def tick(c: sqlite3.Connection, prov, ctx: dict, sess: dict,
 
     for a in gui:
         txt = render_watch.render_alert(a, src=getattr(prov, "name", ""),
-                                       url=ctx.get("url", ""),
                                        pos=ctx.get("pos"))
         # loud=True: Tier 1 la nhung thu phai lam ngay, khong phai thong tin.
-        if await send(txt, True):
+        if await send(txt, True, render_watch.keyboard(ctx.get("url", ""))):
             watch.record(c, d, a, now)
             out["sent"] += 1
             if lg:
@@ -301,8 +308,9 @@ async def run(args, lg: logging.Logger) -> int:
     except Exception:                                            # noqa: BLE001
         pass
 
-    async def send(txt: str, loud: bool = False) -> bool:
-        return await tg_send(txt, loud, args.dry, lg)
+    async def send(txt: str, loud: bool = False,
+                   markup: dict | None = None) -> bool:
+        return await tg_send(txt, loud, args.dry, lg, markup)
 
     async def nap(sec: float) -> bool:
         """Ngu giua hai vong. Tra False khi --once: khong con vong sau de cho.
@@ -341,8 +349,9 @@ async def run(args, lg: logging.Logger) -> int:
                 if watch.once(c, d, "open", now):
                     # Tin mo phien: hom nay canh gi va vi sao. Trong che do
                     # stop_only day la tin DUY NHAT ca phien.
-                    if not await send(render_watch.render_open(
-                            view(ctx, prov, sess, url=url, dry=args.dry))):
+                    v = view(ctx, prov, sess, url=url, dry=args.dry)
+                    if not await send(render_watch.render_open(v), False,
+                                      render_watch.render_keyboard(v)):
                         lg.error("khong gui duoc tin mo phien")
                 r = await tick(c, prov, ctx, sess, now, send, g, lg)
                 lg.info(f"{state} mso={sess['mso']} · {r['n_sym']} ma · "
@@ -366,9 +375,10 @@ async def run(args, lg: logging.Logger) -> int:
                     return 0
             elif state == "AFTERHOURS":
                 if watch.once(c, d, "summary", now):
-                    await send(render_watch.render_summary(
-                        view(ctx, prov, sess, watch.today_rows(c, d), url,
-                             args.dry)))
+                    v = view(ctx, prov, sess, watch.today_rows(c, d), url,
+                             args.dry)
+                    await send(render_watch.render_summary(v), False,
+                               render_watch.render_keyboard(v))
                     lg.info("da gui tong ket phien")
                 if not await nap(240):
                     return 0
@@ -411,23 +421,31 @@ def _smoke() -> None:
     prov = quotes.FixtureProvider([{"now": now.isoformat(), "rows": [
         {"sym": "NVDA", "ts": "2026-09-25T14:55:00+00:00", "o": 100.5,
          "h": 103, "l": 100, "c": 102.5, "v": 400_000}]}])
+    ctx["url"] = "https://example.com/#scanner"
     sent: list[str] = []
+    kbs: list[dict | None] = []
 
-    async def send(txt: str, loud: bool = False) -> bool:
+    async def send(txt: str, loud: bool = False,
+                   markup: dict | None = None) -> bool:
         sent.append(txt)
+        kbs.append(markup)
         return True
 
     c = watch.con(Path(tempfile.mkdtemp()) / "t.db")
     r = asyncio.run(tick(c, prov, ctx, sess, now, send))
     assert r["sent"] == 1 and r["cands"] == 1, r
     assert "NVDA" in sent[0] and "102.00" in sent[0], sent[0]
+    # Nut "Bang dieu khien" di theo canh bao qua reply_markup, khong nam trong chu.
+    assert "<a href" not in sent[0], "link dashboard quay lai than tin nhan"
+    assert kbs[0] and kbs[0]["inline_keyboard"][0][0]["url"] == ctx["url"], kbs[0]
     # Vong hai: da ghi vao DB -> khong gui lai.
     r2 = asyncio.run(tick(c, prov, ctx, sess, now, send))
     assert r2["sent"] == 0 and r2["held"] == 1, r2
     assert len(sent) == 1
 
     # Gui that bai -> KHONG ghi -> vong sau thu lai.
-    async def fail(txt: str, loud: bool = False) -> bool:
+    async def fail(txt: str, loud: bool = False,
+                   markup: dict | None = None) -> bool:
         return False
 
     c2 = watch.con(Path(tempfile.mkdtemp()) / "t.db")

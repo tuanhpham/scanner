@@ -252,5 +252,32 @@ def test_the_html_can_bang():
             assert txt.count(f"<{the}>") == txt.count(f"</{the}>"), (ten, the)
 
 
+# ────────────── nut bang dieu khien ──────────────
+def test_khong_tin_nao_con_the_a_trong_than_tin():
+    """Link dashboard la mot nut (reply_markup), khong phai mot dong chu.
+
+    Mot the <a> trong than tin nhan an vao gioi han 4096 ky tu, va vi no o khoi
+    uu tien thap nhat (P_FOOT) thi no bi cat dau tien dung nhung phien nhieu
+    canh bao nhat - tuc dung luc can mo dashboard nhat. No cung bi degrade()
+    strip mat khi Telegram tu choi tag."""
+    for ten, txt in moi_tin():
+        assert "<a href" not in txt, ten
+        assert "Xem bảng điều khiển" not in txt, ten
+
+
+def test_ban_phim_co_dung_mot_nut_dan_ve_dashboard():
+    url = "https://x.pages.dev/#scanner"
+    assert rw.keyboard(url) == {"inline_keyboard": [[{"text": rw.BTN_DASH,
+                                                     "url": url}]]}
+    v = rw.WatchView(day=DAY, url=url)
+    assert rw.render_keyboard(v) == rw.keyboard(url), "hai duong phai ra mot nut"
+
+
+def test_chua_cau_hinh_dashboard_thi_khong_co_ban_phim():
+    """`{"inline_keyboard": [[]]}` bi Telegram tu choi bang 400 -> phai la None."""
+    assert rw.keyboard("") is None
+    assert rw.render_keyboard(rw.WatchView(day=DAY)) is None
+
+
 if __name__ == "__main__":
     _util.main(globals())

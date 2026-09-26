@@ -234,10 +234,36 @@ def render_warn(v: WatchView) -> list[str]:
 
 def render_foot(v: WatchView) -> list[str]:
     bits = [b for b in (v.sess, f"nguồn {v.src}" if v.src else "") if b]
-    out = [f"<i>{esc(' · '.join(bits))}</i>"] if bits else []
-    if v.url:
-        out.append(f'<a href="{esc(v.url)}">Xem bảng điều khiển →</a>')
-    return out
+    return [f"<i>{esc(' · '.join(bits))}</i>"] if bits else []
+
+
+# ───────────────────────── nut bang dieu khien ─────────────────────────
+BTN_DASH = "📊 Bảng điều khiển"
+
+
+def keyboard(url: str) -> dict | None:
+    """Nut "Bang dieu khien", thay cho the <a> tung nam o cuoi tin nhan.
+
+    Cung ly do render.py dung inline_keyboard cho alert cham diem: mot the <a>
+    la mot dong chu nam TRONG than tin nhan, nen no an vao gioi han 4096 ky tu,
+    va vi no o khoi uu tien thap nhat (P_FOOT) thi no la thu dau tien bi cat khi
+    tin dai - dung nhung phien nhieu canh bao nhat, tuc dung luc can mo dashboard
+    nhat. `reply_markup` nam NGOAI than tin: khong tinh do dai, khong bi
+    `degrade()` strip khi Telegram tu choi tag, va tren dien thoai no la mot o
+    bam duoc thay vi mot doan chu gach chan rong 8 pixel.
+
+    Nhan `url` chu khong nhan WatchView vi render_alert() cung can no ma alert
+    thi khong di qua WatchView. None = chua cau hinh dashboard; tra None chu
+    khong tra ban phim rong vi `{"inline_keyboard": [[]]}` bi Telegram tu choi
+    bang 400.
+    """
+    if not url:
+        return None
+    return {"inline_keyboard": [[{"text": BTN_DASH, "url": url}]]}
+
+
+def render_keyboard(v: WatchView) -> dict | None:
+    return keyboard(v.url)
 
 
 def open_blocks(v: WatchView) -> list[tuple[int, list[str]]]:
@@ -286,12 +312,15 @@ def _stop_panel(a: dict) -> str:
     return _pre(lines)
 
 
-def render_alert(a: dict, src: str = "", url: str = "",
-                 pos: dict | None = None) -> str:
+def render_alert(a: dict, src: str = "", pos: dict | None = None) -> str:
     """Mot canh bao Tier 1 -> mot tin nhan.
 
     Mot tin mot canh bao, co y: tin nhan gom nhieu ma phai doc het moi biet ma
     nao can lam gi, va Tier 1 la nhung thu can lam ngay.
+
+    Khong con nhan `url`: link dashboard gio la mot nut trong `reply_markup`
+    (xem keyboard()), tuc no khong thuoc than tin nhan nua nen khong the la viec
+    cua ham dung than tin nhan.
     """
     rule = a.get("rule", "?")
     blk: list[tuple[int, list[str]]] = [(P_HEAD, [
@@ -333,8 +362,6 @@ def render_alert(a: dict, src: str = "", url: str = "",
             blk.append((P_WARN, ["<blockquote>"
                                  + "\n".join(esc(x) for x in bits)
                                  + "</blockquote>"]))
-    if url:
-        blk.append((P_FOOT, [f'<a href="{esc(url)}">Xem bảng điều khiển →</a>']))
     return unicodedata.normalize("NFC", render.fit(blk))
 
 
@@ -428,10 +455,16 @@ def _smoke() -> None:
         assert txt and len(txt) <= render.SAFE_LEN, (ten, len(txt))
         assert "None" not in txt, (ten, "mot o thieu du lieu lot ra tin nhan")
         assert txt == unicodedata.normalize("NFC", txt), ten
+        # Link dashboard phai la nut, khong phai chu: mot the <a> lot lai vao day
+        # nghia la no vua an vao gioi han 4096 ky tu VA vua bi degrade() strip.
+        assert "<a href" not in txt, (ten, "link dashboard quay lai than tin nhan")
     d = dict(_demo())
     assert "trễ 16 phút" in d["CANH BAO: cham diem vao"]
     assert "im lặng" in d["MO PHIEN (downtrend, tin duy nhat)"]
     assert "EUR" in d["MO PHIEN (full)"], "ma dung ngoai phai hien ra"
+    assert keyboard("") is None, "chua cau hinh dashboard thi khong co ban phim"
+    assert keyboard("https://x.dev")["inline_keyboard"][0][0]["url"] \
+        == "https://x.dev"
     print("render_watch.py: smoke ok")
 
 
@@ -448,6 +481,12 @@ def main() -> int:
         pass
     for ten, txt in _demo():
         print(f"\n{'=' * 60}\n{ten}  ({len(txt)} ky tu)\n{'=' * 60}\n{txt}")
+    # Nut khong nam trong chu, nen in rieng - nguoc lai doc ban demo o day se
+    # tuong la tin nhan da mat duong vao dashboard.
+    kb = keyboard("https://example.com")
+    print(f"\n{'=' * 60}\nNUT KEM THEO (reply_markup) cho MO PHIEN / TONG KET / "
+          f"moi CANH BAO\n{'=' * 60}")
+    print("  [ " + " ] [ ".join(b["text"] for b in kb["inline_keyboard"][0]) + " ]")
     print()
     _smoke()
     return 0

@@ -391,10 +391,29 @@ def render_foot(v: NightView) -> list[str]:
     if v.stages:
         bits.append(f"{ok}/{len(v.stages)} bước xong")
     line = " · ".join(bits)
-    out = [f"<i>{esc(line)}</i>"] if line else []
-    if v.url:
-        out.append(f'<a href="{esc(v.url)}">Xem bảng điều khiển →</a>')
-    return out
+    return [f"<i>{esc(line)}</i>"] if line else []
+
+
+BTN_DASH = "📊 Bảng điều khiển"
+
+
+def render_keyboard(v: NightView) -> dict | None:
+    """Nut "Bang dieu khien", thay cho the <a> tung nam o cuoi tin nhan.
+
+    Cung ly do render.py dung inline_keyboard cho alert trong phien: mot the <a>
+    la mot dong chu nam TRONG than tin nhan, nen no an vao gioi han 4096 ky tu,
+    va vi no o khoi uu tien thap nhat (P_FOOT) thi no la thu dau tien bi cat khi
+    bao cao dai - dung nhung dem co nhieu loi nhat, tuc dung nhung dem can mo
+    dashboard nhat. `reply_markup` nam NGOAI than tin: khong tinh do dai, khong
+    bi `degrade()` strip khi Telegram tu choi tag, va tren dien thoai no la mot
+    o bam duoc thay vi mot doan chu gach chan rong 8 pixel.
+
+    None = chua cau hinh dashboard. Tra None chu khong tra ban phim rong: mot
+    `{"inline_keyboard": [[]]}` bi Telegram tu choi bang 400.
+    """
+    if not v.url:
+        return None
+    return {"inline_keyboard": [[{"text": BTN_DASH, "url": v.url}]]}
 
 
 # ───────────────────────── lap tin nhan ─────────────────────────
@@ -508,9 +527,14 @@ if __name__ == "__main__":
     import sys
     sys.stdout.reconfigure(encoding="utf-8")            # type: ignore[union-attr]
     for k in ("binh thuong", "downtrend", "fail", "lookahead"):
-        txt = render_night(_demo(k))
+        v = _demo(k)
+        txt = render_night(v)
         print("=" * 72)
         print(f"{k}  ({len(txt)} ky tu / {render.SAFE_LEN})")
         print("=" * 72)
         print(txt)
+        # Nut khong nam trong `txt` (reply_markup), nen phai in rieng - khong thi
+        # doc ban demo o day se tuong tin nhan da mat duong vao dashboard.
+        for row in (render_keyboard(v) or {}).get("inline_keyboard") or []:
+            print("  [ " + " ] [ ".join(b["text"] for b in row) + " ]")
         print()

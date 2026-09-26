@@ -373,11 +373,17 @@ def st_push(db, dry: bool, lg: logging.Logger) -> dict:
 
 def st_telegram(db, dry: bool, lg: logging.Logger, view=None) -> dict:
     txt = render_night.render_night(view)
+    # Link dashboard la mot NUT (reply_markup), khong phai mot dong chu trong
+    # than tin nhan: xem render_night.render_keyboard().
+    kb = render_night.render_keyboard(view)
     if dry:
         # In ra de doc bang mat. Day la ca muc dich cua --dry-run: xem tin nhan
-        # TRUOC khi no den dien thoai.
+        # TRUOC khi no den dien thoai. Nut phai in rieng - no khong nam trong
+        # `txt`, nen neu chi in txt thi "mat nut" la bug khong the thay o day.
         print("\n" + "─" * 72 + f"\nTIN NHẮN ({len(txt)} ký tự)\n"
               + "─" * 72 + f"\n{txt}\n" + "─" * 72)
+        for row in (kb or {}).get("inline_keyboard") or []:
+            print("  [ " + " ] [ ".join(b.get("text", "?") for b in row) + " ]")
         return {"detail": f"{len(txt)} ký tự (--dry-run: không gửi)",
                 "skipped": True, "text": txt}
     import asyncio
@@ -385,7 +391,7 @@ def st_telegram(db, dry: bool, lg: logging.Logger, view=None) -> dict:
     if not tgapi.ready():
         return {"detail": "chưa cấu hình (thiếu TG_TOKEN / TG_CHAT_ID)",
                 "skipped": True, "text": txt}
-    if not asyncio.run(tgapi.send(txt)):
+    if not asyncio.run(tgapi.send(txt, kb)):
         raise RuntimeError("tgapi.send() trả về False → xem log của tgapi.")
     return {"detail": f"đã gửi, {len(txt)} ký tự", "text": txt}
 

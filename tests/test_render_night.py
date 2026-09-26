@@ -330,5 +330,29 @@ def test_moi_nhan_enum_co_ban_dich():
         assert t[1] in rn.VOL_VI, t[1]
 
 
+# ───────────────────────── nut bang dieu khien ─────────────────────────
+def test_link_dashboard_la_nut_chu_khong_phai_chu_trong_tin_nhan():
+    """Mot the <a> o cuoi tin nhan an vao gioi han 4096 ky tu VA nam o khoi uu
+    tien thap nhat, nen no la thu bi cat dau tien dung nhung dem bao cao dai -
+    tuc dung nhung dem can mo dashboard nhat. `reply_markup` thi khong."""
+    v = _v(url="https://x.pages.dev/#scanner")
+    txt = rn.render_night(v)
+    assert "<a href" not in txt, "link dashboard quay lai than tin nhan"
+    assert "Xem bảng điều khiển" not in txt
+    assert rn.render_keyboard(v) == {"inline_keyboard": [
+        [{"text": rn.BTN_DASH, "url": "https://x.pages.dev/#scanner"}]]}
+
+
+def test_chua_cau_hinh_dashboard_thi_khong_co_ban_phim():
+    """`{"inline_keyboard": [[]]}` bi Telegram tu choi bang 400 -> phai la None."""
+    assert rn.render_keyboard(_v(url="")) is None
+
+
+def test_moi_ban_demo_deu_co_nut():
+    for k in ("binh thuong", "downtrend", "fail", "lookahead"):
+        kb = rn.render_keyboard(rn._demo(k))
+        assert kb and kb["inline_keyboard"][0], k
+
+
 if __name__ == "__main__":
     _util.main(globals())

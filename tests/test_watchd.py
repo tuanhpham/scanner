@@ -64,9 +64,14 @@ class Sink:
     def __init__(self, ok: bool = True) -> None:
         self.ok = ok
         self.msgs: list[tuple[str, bool]] = []
+        # Tham so thu ba cua `send`: inline_keyboard. Ghi rieng vi no khong nam
+        # trong chu, nen mot tin MAT NUT van di qua moi assert ve `msgs`.
+        self.kbs: list[dict | None] = []
 
-    async def __call__(self, txt: str, loud: bool = False) -> bool:
+    async def __call__(self, txt: str, loud: bool = False,
+                       markup: dict | None = None) -> bool:
         self.msgs.append((txt, loud))
+        self.kbs.append(markup)
         return self.ok
 
 
@@ -260,6 +265,33 @@ def test_moi_duong_thoat_luc_khoi_dong_deu_di_qua_chet():
         assert "chet(" in truoc or "⛔" in truoc, (
             f"ma thoat {m.group(1)} khong co tin nhan nao di kem: {ln.strip()}")
     assert src.count("await chet(") >= 3, "co duong thoat moi khong goi chet()?"
+
+
+def test_canh_bao_mang_theo_nut_bang_dieu_khien():
+    """Link dashboard di theo `reply_markup`, khong nam trong than tin nhan.
+
+    Kiem o day chu khong chi o render_watch: cho de mat nut nhat la call site -
+    `tick()` la noi duy nhat biet `ctx["url"]`, va mot canh bao khong nut trong
+    ra y nhu mot canh bao co nut.
+    """
+    import render_watch
+
+    c, s = db(), Sink()
+    url = "https://x.pages.dev/#scanner"
+    r = tick(c, prov(), ctx(url=url), s)
+    assert r["sent"] == 1, r
+    assert "<a href" not in s.msgs[0][0], "link quay lai than tin nhan"
+    assert s.kbs[0] == render_watch.keyboard(url), s.kbs[0]
+    c.close()
+
+
+def test_chua_cau_hinh_dashboard_thi_canh_bao_khong_co_nut():
+    """`{"inline_keyboard": [[]]}` bi Telegram tu choi bang 400: tin nhan se
+    khong den. Chua co dashboard thi phai gui KHONG kem markup."""
+    c, s = db(), Sink()
+    assert tick(c, prov(), ctx(url=""), s)["sent"] == 1
+    assert s.kbs == [None], s.kbs
+    c.close()
 
 
 def test_src_down_la_mot_tin_mot_lan_moi_phien():
