@@ -346,6 +346,12 @@ def st_mktcap(db, dry: bool, lg: logging.Logger) -> dict:
 
 
 def st_push(db, dry: bool, lg: logging.Logger) -> dict:
+    """CHU Y: `db` o day la DUONG DAN, khong phai Connection nhu 7 buoc kia.
+
+    `push._con()` mo DB bang uri `mode=ro` de mot loi lap trinh trong push.py
+    khong the ghi vao baseline.db (3 nam nen, 30-60 phut tai lai), va mot
+    Connection dang mo thi khong the ghep vao mot chuoi uri. Xem `_db_path()`.
+    """
     import push                                 # doc .env, co the tu vo hieu
     if not push.ready():
         # Khong cau hinh push KHONG phai loi: scanner chay duoc ma khong can
@@ -408,6 +414,33 @@ def con(db=DB) -> sqlite3.Connection:
     c = bars.con(db) if not isinstance(db, sqlite3.Connection) else db
     c.executescript(DDL)
     return c
+
+
+def _db_path(db) -> str:
+    """Duong dan file cua DB, ke ca khi caller dua vao mot Connection.
+
+    Sinh ra vi mot buoc - `push` - can duong dan chu khong can Connection dang
+    mo, va `run()` thi giu mot Connection de bay buoc kia dung chung. Truoc do
+    call site dua thang `c` vao `push.push_all()`, nen buoc push CHET NGAY bang
+    `TypeError: argument should be a str or an os.PathLike ... not 'Connection'`
+    o may nao da cau hinh push - tuc la o dung nhung may co dashboard that. Tren
+    may dev thi `push.ready()` False nen buoc bi bo qua truoc khi cham vao db,
+    va do la ly do bug nay song duoc qua ca bo test.
+
+    `PRAGMA database_list` la cach duy nhat lay lai ten file tu mot Connection.
+    DB trong bo nho tra ve chuoi rong; khi do noi ro thay vi de push.py nem mot
+    loi kho hieu hon o sau.
+    """
+    if not isinstance(db, sqlite3.Connection):
+        return str(db)
+    for _seq, name, file in db.execute("PRAGMA database_list").fetchall():
+        if name == "main":
+            if not file:
+                raise RuntimeError(
+                    "DB nam trong bo nho (:memory:) nen khong co duong dan de "
+                    "push.py mo lai o che do chi doc.")
+            return file
+    raise RuntimeError("PRAGMA database_list khong tra ve schema `main`.")
 
 
 def save_run(db, res: dict) -> None:
@@ -580,7 +613,8 @@ def run(db=DB, dry: bool = False, only: set[str] | None = None,
                                           url=dashboard_url())
 
         if not only or "push" in only:
-            do("push", False, st_push, c, dry, lg)
+            # Duong dan, khong phai `c`: xem docstring cua st_push va _db_path.
+            do("push", False, st_push, _db_path(db), dry, lg)
 
         # Telegram sau cung va LUON chay: no can biet ca ket qua cua push.
         # `stages` duoc gan lai ngay truoc khi dung tin nhan, de khoi "chuoi chay

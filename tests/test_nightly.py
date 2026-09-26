@@ -319,5 +319,64 @@ def test_stages_luu_duoi_dang_json_doc_duoc_tu_ngoai():
     assert isinstance(json.loads(raw[1]), list)
 
 
+# ───────────────────────── buoc `push` nhan duong dan ─────────────────────────
+def test_push_nhan_duong_dan_chu_khong_phai_connection():
+    """`push._con()` mo DB bang uri `mode=ro`, nen no can chuoi duong dan.
+
+    Bug that: `run()` dua Connection dung chung vao `push.push_all()`, va buoc
+    push chet bang `TypeError: ... not 'Connection'` tren MOI may da cau hinh
+    push - tuc la dung nhung may co dashboard. Cac test khac khong bat duoc vi o
+    day `push.ready()` la False nen buoc bi bo qua truoc khi cham vao `db`; nen
+    test nay phai bat `ready()` len va chan lai dung mot doi so.
+    """
+    import push
+
+    db = _db()
+    thay: list = []
+
+    def gia(d, dry=False, force=False):
+        thay.append(d)
+        return {"status": "ok"}
+
+    ready, push_all = push.ready, push.push_all
+    try:
+        push.ready = lambda: True
+        push.push_all = gia
+        r = ng.run(db, dry=True, lg=_quiet(), only={"push"})
+    finally:
+        push.ready, push.push_all = ready, push_all
+
+    assert len(thay) == 1, "buoc push khong chay"
+    assert not isinstance(thay[0], sqlite3.Connection), \
+        "push nhan Connection -> Path(db) nem TypeError"
+    assert Path(thay[0]) == db, thay[0]
+    assert [s for s in r["stages"] if s["stage"] == "push"][0]["ok"]
+
+
+def test_db_path_lay_lai_duong_dan_tu_mot_connection():
+    """`run()` chap nhan ca Connection, va khi do buoc push van phai co duong
+    dan - `PRAGMA database_list` la cach duy nhat lay lai tu mot Connection."""
+    db = _db()
+    c = ng.con(db)
+    try:
+        assert Path(ng._db_path(c)) == db
+        assert ng._db_path(db) == str(db), "dua duong dan thi tra nguyen"
+    finally:
+        c.close()
+
+    mem = sqlite3.connect(":memory:")
+    try:
+        # Khong duoc tra ve chuoi rong: push.py se mo `file:?mode=ro` roi bao mot
+        # loi khong lien quan gi den nguyen nhan that.
+        try:
+            ng._db_path(mem)
+        except RuntimeError as e:
+            assert "bo nho" in str(e), e
+        else:
+            raise AssertionError("DB trong bo nho phai bi noi ro")
+    finally:
+        mem.close()
+
+
 if __name__ == "__main__":
     _util.main(globals())
