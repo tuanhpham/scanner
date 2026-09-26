@@ -319,6 +319,31 @@ def test_stages_luu_duoi_dang_json_doc_duoc_tu_ngoai():
     assert isinstance(json.loads(raw[1]), list)
 
 
+# ───────────────────────── --dry-run khong duoc ghi ─────────────────────────
+def test_dry_run_truyen_dry_xuong_structure():
+    """`structure.build()` ghi de ca bang `struct`, nen --dry-run PHAI truyen co.
+
+    Bug that: `st_structure` goi `structure.build(db)` khong co `dry`, va chu
+    thich ngay tren no lai noi rang run() da bo qua buoc nay trong --dry-run -
+    khong he co cho nao lam vay. Tren VM that thi lenh ghi do doi quyen ghi voi
+    main.py, het 30s busy_timeout, roi `database is locked` dung ca chuoi.
+    """
+    import structure
+
+    thay: list = []
+    goc = structure.build
+    try:
+        structure.build = lambda db, limit=0, min_bars=0, dry=False: (
+            thay.append(dry), {"da_xet": 9, "co_so_lieu": 9, "loi": 0,
+                               "co_nen": 2, "dry": dry})[1]
+        ng.run(_db(), dry=True, lg=_quiet(), only={"structure"})
+        ng.run(_db(), dry=False, lg=_quiet(), only={"structure"})
+    finally:
+        structure.build = goc
+
+    assert thay == [True, False], thay
+
+
 # ───────────────────────── buoc `push` nhan duong dan ─────────────────────────
 def test_push_nhan_duong_dan_chu_khong_phai_connection():
     """`push._con()` mo DB bang uri `mode=ro`, nen no can chuoi duong dan.

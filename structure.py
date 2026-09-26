@@ -426,12 +426,19 @@ def con(db=DB) -> sqlite3.Connection:
     return c
 
 
-def build(db=DB, limit: int = 0, min_bars: int = MIN_HIST) -> dict:
+def build(db=DB, limit: int = 0, min_bars: int = MIN_HIST,
+          dry: bool = False) -> dict:
     """Tinh cau truc cho moi ma trong kho nen, ghi de bang `struct`.
 
     Ghi de toan bang trong MOT transaction: bang nay la anh chup cua mot phien,
     tron dong cua hom nay voi dong cua hom qua thi setups.py se so hai ma o hai
     thoi diem khac nhau ma khong biet.
+
+    `dry=True`: tinh het nhung khong ghi, giong regime.build/sectors.build. Them
+    vao muon hon hai ham do, va cai gia phai tra la nightly.py --dry-run da GHI
+    bang `struct` suot thoi gian qua - mot lan chay thu ghi de anh chup cua
+    phien truoc, va tren VM dang chay that no con doi quyen ghi voi main.py nen
+    het 30 giay busy_timeout roi bao `database is locked`.
     """
     c = con(db)
     sl = bars.syms(c, min_rows=min_bars)
@@ -479,16 +486,17 @@ def build(db=DB, limit: int = 0, min_bars: int = MIN_HIST) -> dict:
                 if mine is not None:
                     m[f"rs{w}"] = mine - b
 
-    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-    ins = (f"INSERT INTO struct(sym,{','.join(COLS)},updated) "
-           f"VALUES({','.join('?' * (len(COLS) + 2))})")
-    with c:
-        c.execute("DELETE FROM struct")
-        c.executemany(ins, [(s, *(m[k] for k in COLS), now)
-                            for s, m in out.items()])
+    if not dry:
+        now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+        ins = (f"INSERT INTO struct(sym,{','.join(COLS)},updated) "
+               f"VALUES({','.join('?' * (len(COLS) + 2))})")
+        with c:
+            c.execute("DELETE FROM struct")
+            c.executemany(ins, [(s, *(m[k] for k in COLS), now)
+                                for s, m in out.items()])
     if not isinstance(db, sqlite3.Connection):
         c.close()
-    return {"da_xet": len(sl), "co_so_lieu": len(out), "loi": bad,
+    return {"da_xet": len(sl), "co_so_lieu": len(out), "loi": bad, "dry": dry,
             "co_nen": sum(1 for m in out.values() if m["base_len"] >= MIN_BASE)}
 
 
@@ -661,6 +669,8 @@ if __name__ == "__main__":
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--build", action="store_true")
+    ap.add_argument("--dry-run", dest="dry", action="store_true",
+                    help="do het, in bang, KHONG ghi bang `struct`")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--show", metavar="SYM")
     # Giong regime.py/sectors.py: chay thu tren mot ban copy cua kho nen ma
@@ -673,16 +683,22 @@ if __name__ == "__main__":
         _show(a.show.upper(), db=DB)
         raise SystemExit(0)
 
-    if not a.build:
+    if not (a.build or a.dry):
         _smoke()
         raise SystemExit(0)
 
     t0 = dt.datetime.now()
-    st = build(DB, limit=a.limit)
+    st = build(DB, limit=a.limit, dry=a.dry)
     print(f"struct: {st['co_so_lieu']}/{st['da_xet']} ma co so lieu, "
           f"{st['co_nen']} ma dang trong nen tich luy, {st['loi']} loi "
-          f"({(dt.datetime.now() - t0).total_seconds():.0f}s)")
+          f"({(dt.datetime.now() - t0).total_seconds():.0f}s)"
+          + ("  [--dry-run: khong ghi]" if a.dry else ""))
 
+    # Bang duoi doc TU DB, nen o --dry-run no la anh chup CU chu khong phai so
+    # vua do. Noi ra, khong thi so o hai khoi lech nhau ma khong hieu tai sao.
+    if a.dry:
+        print("(--dry-run: bang duoi la noi dung `struct` DANG co trong DB, "
+              "khong phai so vua do o tren)")
     d = load_struct(DB)
     near = [(s, m) for s, m in d.items()
             if m["base_len"] >= MIN_BASE and m["dist_pivot"] is not None

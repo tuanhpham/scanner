@@ -300,16 +300,25 @@ def st_sectors(db, dry: bool, lg: logging.Logger) -> dict:
 
 
 def st_structure(db, dry: bool, lg: logging.Logger) -> dict:
-    # structure.build() khong co `dry`: no ghi de ca bang moi lan, va bang do la
-    # so lieu DAN XUAT - chay lai tu `bars` la ra y nguyen. Trong --dry-run ta
-    # KHONG goi no (xem run()); o day chi de ro rang la vay.
-    r = structure.build(db)
+    # Cho nay tung ghi de bang `struct` CA TRONG --dry-run. Chu thich cu o day
+    # noi rang "trong --dry-run ta KHONG goi no (xem run())" - trong run() khong
+    # he co cho nao lam viec do, nen dong chu do la thu duy nhat bao ve mot
+    # lenh ghi. Ba hau qua, va hau qua thu ba moi la cai lam no lo ra:
+    #   1. `python nightly.py --dry-run` ghi de anh chup cua phien truoc, trong
+    #      khi ca file nay hua "khong ghi gi".
+    #   2. Chay thu luc dang co phien -> `struct` mang so cua nen dang chay.
+    #   3. Tren VM dang chay that, main.py giu quyen ghi baseline.db, nen lenh
+    #      ghi nay doi het 30 giay busy_timeout roi nem `database is locked` -
+    #      va vi `structure` la buoc BAT BUOC, mot lan chay THU lam dung ca
+    #      chuoi va bao cao ve mot loi khong ton tai.
+    r = structure.build(db, dry=dry)
     if not r["co_so_lieu"]:
         raise RuntimeError(
             f"đo được 0/{r['da_xet']} mã. Kho nến rỗng hoặc quá ngắn → chạy "
             f"`python bars.py --sync --full`.")
     return {"detail": f"{r['co_so_lieu']}/{r['da_xet']} mã đo được · "
-                      f"{r['co_nen']} có nền tích lũy · {r['loi']} lỗi",
+                      f"{r['co_nen']} có nền tích lũy · {r['loi']} lỗi"
+                      + (" · --dry-run: không ghi" if dry else ""),
             "n_struct": r["co_so_lieu"]}
 
 

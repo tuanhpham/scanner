@@ -207,6 +207,28 @@ def test_build_va_load_struct():
     assert d["BOO"]["rs_pct"] == 100.0 and d["DIP"]["rs_pct"] == 0.0
 
 
+def test_dry_do_het_nhung_khong_ghi():
+    """`dry=True` phai do day du roi khong cham vao bang - giong regime.build.
+
+    Bug that: `build()` khong co `dry` nen `nightly.py --dry-run` ghi de bang
+    `struct` moi lan chay thu, va tren VM dang chay that no con doi quyen ghi
+    voi main.py roi nem `database is locked` - lam mot buoc BAT BUOC do trong
+    mot lan chay dang le khong duoc phep ghi gi.
+    """
+    data = {"BOO": _ser([(8.0, 10.0, 80), (10.0, 10.0, 40)]),
+            "DIP": _ser([(100.0, 25.0, 150)])}
+    db = _db(data)
+    st = s.build(db, dry=True)
+    assert st["co_so_lieu"] == 2 and st["dry"] is True, st
+    assert s.load_struct(db) == {}, "dry=True khong duoc ghi bang `struct`"
+
+    # Va no khong duoc ghi de anh chup dang co: chay that truoc, dry sau.
+    s.build(db)
+    truoc = s.load_struct(db)
+    s.build(db, dry=True)
+    assert s.load_struct(db) == truoc, "dry=True da xoa anh chup cu"
+
+
 # ───────────────────── Stage 3: RS so voi ma chuan ─────────────────────
 def test_rs_la_loi_nhuan_vuot_troi_so_voi_ma_chuan():
     """rs21/rs63 = ret cua ma TRU ret cua SPY, cung cua so, cung nen quyet dinh.
