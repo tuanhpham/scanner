@@ -295,7 +295,9 @@ def render_sectors(v: NightView) -> list[str]:
             + "".join(f"{_arrow(ch.get(w, ch.get(str(w)))):>5}" for w in wins)
             + f"{trend:>7}")
     lines.append("")
-    lines.append("* = 3 nganh dan dat (nguon cua danh sach theo doi)")
+    # Dong chu thich, khong phai mot dong cua bang: khong phai thang cot voi cac
+    # cot ASCII o tren, nen viet tieng Viet co dau nhu moi cau khac trong tin.
+    lines.append("* = 3 ngành dẫn dắt (nguồn của danh sách theo dõi)")
 
     out = ["<b>XẾP HẠNG NGÀNH</b>", _pre(lines)]
     if (dv := [s for s in top if s in config.DEFENSIVE]):
