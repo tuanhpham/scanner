@@ -581,3 +581,17 @@ ExecStart=/home/ubuntu/scanner/.venv/bin/python -u main.py
              └─95600 /home/ubuntu/scanner/.venv/bin/python -u main.py
 
 Sep 14 22:06:42 scanner systemd[1]: Started scanner.service - Stock anomaly scanner.
+
+
+(.venv) ubuntu@scanner:~/scanner$ ps aux | grep -E "nightly|bars\.py|prep\.py|main\.py|watchd" | grep -v grep
+root          43  0.0  0.0      0     0 ?        S    Sep03   0:00 [watchdogd]
+ubuntu    184701  0.2  3.3 1237724 203716 ?      Ssl  Sep25   3:51 /home/ubuntu/scanner/.venv/bin/python -u main.py
+ubuntu    193387  0.0  1.4 173092 88108 ?        Ss   01:34   0:01 /home/ubuntu/scanner/.venv/bin/python watchd.py --quiet
+(.venv) ubuntu@scanner:~/scanner$ sudo fuser - v ~/scanner/state/baseline.db
+Specified filename v does not exist.
+/home/ubuntu/scanner/state/baseline.db: 184701 193387
+(.venv) ubuntu@scanner:~/scanner$ sudo fuser -v ~/scanner/state/baseline.db
+                     USER        PID ACCESS COMMAND
+/home/ubuntu/scanner/state/baseline.db:
+                     ubuntu    184701 F.... python
+                     ubuntu    193387 F.... python
