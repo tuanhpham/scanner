@@ -460,6 +460,37 @@ def test_refresh_mktcap_bo_qua_ma_con_han():
         assert r["cached"] == 1 and r["asked"] == 0 and not r["err"]
 
 
+def test_refresh_mktcap_nhan_Connection_nhu_nightly_dua_vao():
+    """Loi that da xay ra: `mktcap LOI TypeError: expected str, bytes or
+    os.PathLike object, not Connection`.
+
+    nightly.py mo MOT ket noi cho ca chuoi chay dem roi dua chinh no vao tung
+    buoc (xem `do(name, fatal, fn, c, dry, lg)`), nen `sqlite3.connect(db)` tran
+    o day nem TypeError va buoc mktcap chet - im lang o cho te nhat: mktcap la
+    buoc KHONG bat buoc, nen chuoi van "gan nhu chay xong" va cac ma di vao phien
+    kem ghi chu "chưa biết vốn hóa" thay vi kem von hoa that.
+
+    Kiem CA BA dieu, vi hai dieu sau la nhung cach hong nang hon chinh TypeError:
+      - khong dong ket noi cua nguoi khac (buoc push/telegram doc tiep tren no),
+      - khong de lai transaction ghi MO (chinh la goc cua `database is locked`),
+      - khong doi row_factory cua nguoi khac.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        p = _db(d, "UPTREND")
+        _add(p, "AAA")
+        c = sqlite3.connect(p, timeout=5)
+        try:
+            r = wl.refresh_mktcap(c, ["AAA"], fetch=lambda s: 7.5e9)
+            assert r["ok"] == 1 and r["fail"] == 0, r
+            assert not c.in_transaction, "de lai transaction ghi mo tren ket noi dung chung"
+            assert c.row_factory is None, "doi row_factory cua ket noi nguoi khac"
+            # Ket noi phai con song: day la dieu buoc push/telegram phu thuoc vao.
+            row = c.execute("SELECT mktcap FROM base WHERE sym='AAA'").fetchone()
+            assert row[0] == 7.5e9, row
+        finally:
+            c.close()
+
+
 def test_refresh_mktcap_danh_sach_rong_khong_lam_gi():
     with tempfile.TemporaryDirectory() as d:
         r = wl.refresh_mktcap(_db(d, "UPTREND"))

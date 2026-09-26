@@ -445,14 +445,33 @@ def refresh_mktcap(db=DB, syms: list[str] | None = None,
     ttl = int(g["mktcap_ttl_days"] if ttl_days is None else ttl_days)
     out = {"asked": 0, "ok": 0, "fail": 0, "cached": 0, "err": ""}
 
-    con = sqlite3.connect(db, timeout=30)
-    con.row_factory = sqlite3.Row
+    # `db` la DUONG DAN hoac Connection. nightly.py mo MOT ket noi cho ca chuoi
+    # chay dem roi dua chinh no vao tung buoc, nen `sqlite3.connect(db)` tran o
+    # day nem `TypeError: expected str, bytes or os.PathLike object, not
+    # Connection` va buoc mktcap chet - dung cai bay ma structure/sectors/setups
+    # da sua bang khuon `bars._c()`. File nay khong import bars (xem docstring
+    # dau file: thuan stdlib, khong keo theo ai), nen viet lai khuon do o day.
+    mine = not isinstance(db, sqlite3.Connection)
+    if mine:
+        con = sqlite3.connect(db, timeout=30)
+        # Giong bars.con(): 5 giay mac dinh cua sqlite3 ngan hon mot batch ghi
+        # cua nightly, va het thoi gian thi buoc nay do vi cho chu khong vi loi.
+        con.execute("PRAGMA busy_timeout=30000")
+        con.row_factory = sqlite3.Row
+    else:
+        con = db
+        # KHONG doi row_factory cua ket noi nguoi khac: cac buoc sau cua
+        # nightly.py doc tiep tren chinh ket noi nay. Moi truy cap duoi day deu
+        # theo chi so (r[0], r[1]) nen chay dung voi ca tuple va Row.
     try:
         have = {r[1] for r in con.execute("PRAGMA table_info(base)")}
-        for name, typ in MKTCAP_COLS:
-            if name not in have:
-                con.execute(f"ALTER TABLE base ADD COLUMN {name} {typ}")
-        con.commit()
+        # `with con:` chu khong phai execute() roi commit(): mot ALTER TABLE nem
+        # tren ket noi DUNG CHUNG cua nightly se de lai transaction ghi MO, va do
+        # dung la goc cua `database is locked` da sua o commit truoc (LOCK-1).
+        with con:
+            for name, typ in MKTCAP_COLS:
+                if name not in have:
+                    con.execute(f"ALTER TABLE base ADD COLUMN {name} {typ}")
 
         if syms is None:
             syms = [r[0] for r in con.execute(
@@ -489,17 +508,25 @@ def refresh_mktcap(db=DB, syms: list[str] | None = None,
             except Exception:                                    # noqa: BLE001
                 cap = None
             if cap and cap > 0:
-                con.execute("UPDATE base SET mktcap=?, mktcap_ts=? WHERE sym=?",
-                            (cap, now, s))
+                # Commit TUNG MA, khong gom mot transaction cho ca vong: giua hai
+                # lan UPDATE la mot cu goi mang dai vai giay, va giu khoa ghi
+                # suot ca vong nghia la chan main.py/watchd.py trong luc chi dang
+                # ngoi cho yfinance. Muoi transaction ti hon re hon nhieu.
+                with con:
+                    con.execute(
+                        "UPDATE base SET mktcap=?, mktcap_ts=? WHERE sym=?",
+                        (cap, now, s))
                 out["ok"] += 1
             else:
                 # KHONG ghi 0 va KHONG ghi mktcap_ts: mot lan hong khong duoc
                 # bien thanh "da biet von hoa = 0" (se loai ma vinh vien) lan
                 # thanh "da kiem roi" (se khong thu lai trong 7 ngay).
                 out["fail"] += 1
-        con.commit()
     finally:
-        con.close()
+        # Chi dong ket noi CUA TA. Dong ket noi cua nightly.py o day thi buoc
+        # push/telegram ngay sau se doc tren mot ket noi da chet.
+        if mine:
+            con.close()
     return out
 
 
