@@ -370,14 +370,25 @@ def record(c: sqlite3.Connection, d: str, a: dict, now: dt.datetime) -> bool:
     Ghi SAU khi gui duoc, khong phai truoc: mot tin nhan khong den duoc ma da
     ghi la "da canh bao" thi mat han. Nguoc lai - gui hai lan - chi la mot tin
     nhan trung, va do la cai gia re hon.
+
+    `with c:` chu KHONG phai execute() roi commit(). Day la dong quan trong nhat
+    trong ham, va no da tung sai: python mo transaction ngam truoc INSERT, nen
+    khi khoa chinh chan lai thi IntegrityError bay ra TRUOC commit() va de lai
+    mot transaction ghi MO. watchd.py giu mot ket noi duy nhat ca phien, va
+    `once()` duoi day tra False o moi vong tu vong thu hai — nghia la ket noi do
+    giu khoa ghi lien tuc tu phut thu hai cua phien den luc restart. Hau qua
+    khong nam o day ma o cho khac trong may: `bars.sync` cua nightly doi het 30
+    giay roi do `database is locked`, va `PRAGMA journal_mode=WAL` khong bao gio
+    doi duoc che do nen kho nen ket o rollback journal. `with c:` commit khi
+    thanh cong va ROLLBACK khi nem, nen khoa duoc tha trong ca hai duong.
     """
     try:
-        c.execute("INSERT INTO watch_alert(d,sym,rule,ts_utc,tier,px,detail) "
-                  "VALUES(?,?,?,?,?,?,?)",
-                  (d, a["sym"], a["rule"], now.isoformat(timespec="seconds"),
-                   a.get("tier", 1), quotes._num(a.get("px")),
-                   a.get("detail", "")))
-        c.commit()
+        with c:
+            c.execute("INSERT INTO watch_alert(d,sym,rule,ts_utc,tier,px,detail) "
+                      "VALUES(?,?,?,?,?,?,?)",
+                      (d, a["sym"], a["rule"], now.isoformat(timespec="seconds"),
+                       a.get("tier", 1), quotes._num(a.get("px")),
+                       a.get("detail", "")))
         return True
     except sqlite3.IntegrityError:
         return False
@@ -390,15 +401,18 @@ def once(c: sqlite3.Connection, d: str, kind: str,
     Dung cho tin mo phien va tong ket ket phien. Cung mot bang, cung mot khoa
     chinh, nen restart giua phien khong gui lai tin mo phien - thu ma mot bien
     trong RAM khong lam duoc.
+
+    Duong "da gui roi" o day chay moi vong quet ca phien, nen `with c:` la bat
+    buoc chu khong phai cho gon: xem record() ben tren.
     """
     if kind not in ONCE:
         raise ValueError(f"kind phai thuoc {ONCE}: {kind!r}")
     now = now or dt.datetime.now(dt.UTC)
     try:
-        c.execute("INSERT INTO watch_alert(d,sym,rule,ts_utc,tier,px,detail) "
-                  "VALUES(?,'',?,?,0,NULL,'')",
-                  (d, kind, now.isoformat(timespec="seconds")))
-        c.commit()
+        with c:
+            c.execute("INSERT INTO watch_alert(d,sym,rule,ts_utc,tier,px,detail) "
+                      "VALUES(?,'',?,?,0,NULL,'')",
+                      (d, kind, now.isoformat(timespec="seconds")))
         return True
     except sqlite3.IntegrityError:
         return False

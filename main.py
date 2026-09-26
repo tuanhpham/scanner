@@ -15,6 +15,7 @@ import os
 import sqlite3
 import time
 import traceback
+from contextlib import closing
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -104,9 +105,51 @@ def junk_ticker(s: str) -> bool:
 
 
 def db() -> sqlite3.Connection:
-    con = sqlite3.connect(DB)
+    # busy_timeout giong bars.con()/watch.con(): baseline.db co nhieu nguoi ghi
+    # cung luc. Mac dinh cua sqlite3 la 5 giay, va 5 giay la it hon mot batch
+    # `bars.save` cua nightly - tuc la vao dung dem chay nightly thi dong
+    # `alerts` cua phien sau se do.
+    con = sqlite3.connect(DB, timeout=30)
+    con.execute("PRAGMA busy_timeout=30000")
+    # Qua bars.wal() nhu store._con(): WAL la thuoc tinh cua FILE nen chi can
+    # mot tien trinh doi duoc mot lan la ca may huong. Import trong ham vi day la
+    # cho duy nhat main.py can bars, va store.py da nap san module nay trong
+    # cung process (nen day chi la mot lan tra cache).
+    try:
+        import bars
+        bars.wal(con)
+    except Exception:                 # noqa: BLE001
+        pass
     con.executescript(DDL)
     return con
+
+
+ALERT_SQL = (
+    "INSERT INTO alerts(ts_utc,ts_et,kind,sym,score,px,chg,rvol,atr_move,"
+    "float_rot,dollar_vol,freshness,sources) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)")
+
+
+def save_alert(kind: str, h: dict, now: dt.datetime, et: dt.datetime) -> None:
+    """Ghi mot dong `alerts`. Mo va DONG ket noi moi lan, co y.
+
+    Truoc day loop_score giu `con = db()` ben ngoai `while True` va goi
+    execute() + commit() thang. Python mo transaction ngam khi execute() ghi,
+    nen mot commit() do vi `database is locked` bay len `except Exception` cua
+    vong lap va de lai transaction ghi MO VINH VIEN tren ket noi song do. Tu luc
+    do khong ai trong may ghi duoc gi nua - ke ca `PRAGMA journal_mode=WAL`,
+    nen kho nen ket o rollback journal va bars cua nightly do `database is
+    locked` moi dem cho den khi main.py duoc restart. Cung mot loi voi
+    watch.record(); xem giai thich day o do.
+
+    Alert la chuyen vai lan mot ngay, nen mot ket noi moi lan ghi khong ton gi,
+    va no bo han ca lop loi tren: khong con ket noi nao song lau de giu khoa.
+    """
+    with closing(db()) as con, con:
+        con.execute(ALERT_SQL, (
+            now.isoformat(timespec="seconds"),
+            et.isoformat(timespec="seconds"), kind, h["sym"], h["score"],
+            h["px"], h["chg"], h["rvol"], h["atr_move"], h["float_rot"],
+            h["dollar_vol"], h["freshness"], ",".join(h["sources"])))
 
 
 def restore_today(st: State) -> int:
@@ -302,7 +345,6 @@ async def loop_universe(st: State, ck: SessionClock) -> None:
 
 
 async def loop_score(st: State, ck: SessionClock, dry: bool) -> None:
-    con = db()
     while True:
         if ck.scanning() and st.universe:
             try:
@@ -396,16 +438,7 @@ async def loop_score(st: State, ck: SessionClock, dry: bool) -> None:
                                  ts_et=et.isoformat(timespec="seconds"),
                                  mso=_m, session=v.session, dry=dry,
                                  halt=(v.halt or {}).get("code"))
-                    con.execute(
-                        "INSERT INTO alerts(ts_utc,ts_et,kind,sym,score,px,chg,"
-                        "rvol,atr_move,float_rot,dollar_vol,freshness,sources)"
-                        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (now.isoformat(timespec="seconds"),
-                         et.isoformat(timespec="seconds"), kind, sym,
-                         h["score"], h["px"], h["chg"], h["rvol"],
-                         h["atr_move"], h["float_rot"], h["dollar_vol"],
-                         h["freshness"], ",".join(h["sources"])))
-                    con.commit()
+                    save_alert(kind, h, now, et)
                     log(f"ALERT {kind} {sym} score={h['score']:.1f} "
                         f"rvol={h['rvol']:.1f}x L{v.level}")
 
@@ -670,19 +703,8 @@ async def run(dry: bool, once: bool) -> None:
             h = hits[0]
             await tg_send(build_view(h, "NEW", ck), True)
             now = dt.datetime.now(dt.timezone.utc)
-            con = db()
-            con.execute(
-                "INSERT INTO alerts(ts_utc,ts_et,kind,sym,score,px,chg,rvol,"
-                "atr_move,float_rot,dollar_vol,freshness,sources)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (now.isoformat(timespec="seconds"),
-                 now.astimezone(ZoneInfo("America/New_York")).isoformat(
-                     timespec="seconds"),
-                 "ONCE", h["sym"], h["score"], h["px"], h["chg"], h["rvol"],
-                 h["atr_move"], h["float_rot"], h["dollar_vol"],
-                 h["freshness"], ",".join(h["sources"])))
-            con.commit()
-            con.close()
+            save_alert("ONCE", h, now,
+                       now.astimezone(ZoneInfo("America/New_York")))
             log(f"da gui + luu DB: {h['sym']} score={h['score']:.1f}"
                 + (f" | {len(_SPOOL)} tin trong spool" if len(_SPOOL) else ""))
         for t in tasks:

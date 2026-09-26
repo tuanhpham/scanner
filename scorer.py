@@ -10,6 +10,7 @@ import datetime as dt
 import math
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
 
 from clock import SessionClock
@@ -65,10 +66,17 @@ def enrich_float(syms: list[str], base: dict[str, dict]) -> int:
     now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     rows = [(v, now, s) for s, v in zip(need, vals) if v]
     if rows:
-        con = sqlite3.connect(DB)
-        con.executemany("UPDATE base SET float_sh=?, float_ts=? WHERE sym=?", rows)
-        con.commit()
-        con.close()
+        # busy_timeout + `with con:` chu khong phai connect/commit/close tran:
+        # ham nay chay trong rank(), tuc moi vong quet cua main.py, va 5 giay mac
+        # dinh cua sqlite3 ngan hon mot batch ghi cua nightly. Het thoi gian thi
+        # `database is locked` bay len tan `except` cua loop_score - mat CA vong
+        # quet, khong chi mat so float - va transaction ghi con o lai chung nao
+        # traceback con song. `with` dong ca hai duong do lai.
+        with closing(sqlite3.connect(DB, timeout=30)) as con:
+            con.execute("PRAGMA busy_timeout=30000")
+            with con:
+                con.executemany(
+                    "UPDATE base SET float_sh=?, float_ts=? WHERE sym=?", rows)
         for v, _, s in rows:
             base[s]["float_sh"] = v
     return len(rows)

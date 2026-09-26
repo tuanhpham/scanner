@@ -16,13 +16,18 @@ Nam bat bien, xep theo do IM LANG cua loi neu no vo:
 5. CANH BAO KHONG LOT QUA CHONG SPAM. Cooldown khong duoc chan `stop`, va tran
    Tier 2 khong duoc chan Tier 1 - ca hai la "mat mot canh bao that", kieu loi
    khong sua duoc sau khi da mat.
+6. GHI TRUNG KHONG DUOC GIU KHOA. Duong "da co roi" chay moi vong quet ca phien
+   tren MOT ket noi song ca phien, nen mot transaction bo mo o do la khoa ghi bi
+   giu ca dem - va nguoi bao loi se la nightly, o mot file khac, vai gio sau.
 
 Thuan stdlib: evaluate()/decide() la ham thuan, DB dung file tam.
 """
 from __future__ import annotations
 
 import datetime as dt
+import sqlite3
 import tempfile
+import time
 from pathlib import Path
 
 import _util
@@ -399,6 +404,39 @@ def test_ghi_duoc_tren_DB_da_ton_tai_va_khong_xoa_gi():
     c2 = w.con(p)          # ensure lai lan hai: CREATE IF NOT EXISTS
     assert len(w.today_rows(c2, D)) == 1
     c2.close()
+
+
+# ────────────── 6. ghi trung khong giu khoa ──────────────
+def test_ghi_trung_khong_de_lai_transaction_giu_khoa():
+    """BAT BIEN 6. Loi that da xay ra: `once()`/`record()` goi execute() roi
+    commit(), nen khi khoa chinh chan lai thi IntegrityError bay ra TRUOC
+    commit() va transaction ghi o lai. watchd.py goi `once(c, d, "open")` moi
+    vong quet, tu vong thu hai tra False, nen no giu khoa ghi lien tuc - va
+    `bars.sync` cua nightly do `database is locked` sau 30 giay dung dem do.
+    """
+    p = db()
+    c = w.con(p)
+    a = {"rule": "gap", "tier": 1, "sym": "AAA", "px": 1.0, "detail": "x"}
+    assert w.once(c, D, "open", NOW) is True
+    assert w.once(c, D, "open", NOW) is False
+    assert not c.in_transaction, "tin mot-lan trung de lai transaction mo"
+    assert w.record(c, D, a, NOW) is True
+    assert w.record(c, D, a, NOW) is False
+    assert not c.in_transaction, "canh bao trung de lai transaction mo"
+
+    # Cau hoi that su quan trong, va la cai ma `in_transaction` chi la dai dien:
+    # nguoi ghi KHAC con xin duoc khoa khong. BEGIN IMMEDIATE la dung thu ma
+    # bars.save()/nightly.save_run() can.
+    o = sqlite3.connect(str(p), timeout=2, isolation_level=None)
+    try:
+        o.execute("PRAGMA busy_timeout=2000")
+        t0 = time.time()
+        o.execute("BEGIN IMMEDIATE")
+        o.execute("ROLLBACK")
+        assert time.time() - t0 < 1.0, "phai lay duoc khoa ngay, khong phai doi"
+    finally:
+        o.close()
+        c.close()
 
 
 # ────────────── 5. canh bao khong lot qua chong spam ──────────────
