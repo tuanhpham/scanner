@@ -93,7 +93,13 @@ CREATE INDEX IF NOT EXISTS ix_watch_alert_d ON watch_alert(d);
 
 
 def con(db=DB) -> sqlite3.Connection:
-    c = sqlite3.connect(db)
+    # busy_timeout giong bars.con(): baseline.db co NHIEU nguoi ghi cung luc -
+    # main.py ghi khoa `beat` moi 20 giay ca ngay, nightly.py ghi de `struct` va
+    # `candidates` moi sang. Mac dinh cua sqlite3 la 5 giay, va thu bi mat khi
+    # het 5 giay o day la dong "da canh bao ma X" - mat dong do thi vong sau
+    # canh lai chinh ma do. 30 giay la con so cua bars.con, giu giong nhau.
+    c = sqlite3.connect(db, timeout=30)
+    c.execute("PRAGMA busy_timeout=30000")
     c.row_factory = sqlite3.Row
     c.executescript(DDL)
     return c
