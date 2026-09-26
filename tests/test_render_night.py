@@ -228,6 +228,19 @@ def test_top3_duoc_danh_dau_va_nhom_phong_thu_duoc_canh_bao():
     assert "XLP, XLU" in txt
 
 
+def test_chu_thich_dau_sao_o_ngoai_panel_va_co_dau():
+    """Chu thich `*` phai co dau, va phai NGOAI <pre>.
+
+    Hai rang buoc keo nguoc nhau: trong panel thi font monospace cua Telegram
+    khong co glyph tieng Viet (test_panel_pre_chi_dung_ascii), ma bo dau di thi
+    doc rat kho chiu. Cho dung la ngay duoi panel, nhu moi dong <i> khac.
+    """
+    rows, chg = rn._demo_sectors()
+    txt = rn.render_night(_v(sectors=rows, chg=chg, top_sectors=["XLK"]))
+    assert "<i>* = 3 ngành dẫn dắt (nguồn của danh sách theo dõi).</i>" in txt
+    assert "ngành dẫn dắt" not in txt[:txt.index("</pre>")]
+
+
 def test_khong_co_nhom_phong_thu_thi_khong_canh_bao():
     rows, chg = rn._demo_sectors()
     txt = rn.render_night(_v(sectors=rows, chg=chg,

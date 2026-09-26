@@ -294,12 +294,13 @@ def render_sectors(v: NightView) -> list[str]:
             f"{r.get('composite') or 0:>7.1f}"
             + "".join(f"{_arrow(ch.get(w, ch.get(str(w)))):>5}" for w in wins)
             + f"{trend:>7}")
-    lines.append("")
-    # Dong chu thich, khong phai mot dong cua bang: khong phai thang cot voi cac
-    # cot ASCII o tren, nen viet tieng Viet co dau nhu moi cau khac trong tin.
-    lines.append("* = 3 ngành dẫn dắt (nguồn của danh sách theo dõi)")
-
-    out = ["<b>XẾP HẠNG NGÀNH</b>", _pre(lines)]
+    # Chu thich cho dau `*`, va no phai o NGOAI panel: font monospace cua
+    # Telegram khong co glyph tieng Viet, nen chu co dau dat trong <pre> khong
+    # nhung xau ma con keo lech ca bang o tren (test_panel_pre_chi_dung_ascii
+    # chan dung viec do). Ngoai panel thi la chu thuong, co dau binh thuong —
+    # giong moi dong <i> chu thich khac trong tin nhan nay.
+    out = ["<b>XẾP HẠNG NGÀNH</b>", _pre(lines),
+           "<i>* = 3 ngành dẫn dắt (nguồn của danh sách theo dõi).</i>"]
     if (dv := [s for s in top if s in config.DEFENSIVE]):
         # Khong phai loi, la mot cau ve thi truong: tien dang chay vao noi tru
         # an. Playbook khong tu biet dieu nay nen phai noi bang chu.
