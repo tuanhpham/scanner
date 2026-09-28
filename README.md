@@ -2940,18 +2940,62 @@ một máy chạy lệch vài phút sẽ cho ra "luôn còn mới" hoặc một 
 |---|---|---|
 | Nhiều lô cùng một mã, mỗi lô một stop | Bảng portfolio hiện stop của lô **cũ nhất** làm số đại diện. Giá giảm thì xuyên mức **cao nhất** trước → lấy số của bảng là canh muộn, hoặc không bao giờ canh | Đẩy **mọi** mức, `stops` xếp giảm dần; `stop_hit()` trả mức cao nhất bị xuyên |
 | Stop đặt bằng **lệnh chờ** `STOP_LOSS` | Không nằm trong `lot.stop`, mà với người dùng thì hai thứ đó là một thứ | Gộp lệnh chờ `pending` vào, chỉ cho mã còn mở; `TAKE_PROFIT` thì **không** |
-| Giá nhập bằng **EUR**, báo giá bằng **USD** | `metrics.ts` ở phía app đang so trực tiếp hai thứ đó. Sao y sang đây sẽ cho ra alert ở mức lệch ~12% mà lại còn tự tin | **Không quy đổi, không đoán tỷ giá.** Mã đó vào `unchecked()` kèm lý do, và phải xuất hiện ở tin nhắn mở phiên |
+| Giá nhập bằng **EUR**, báo giá bằng **USD** | `metrics.ts` ở phía app đang so trực tiếp hai thứ đó. Sao y sang đây sẽ cho ra alert ở mức lệch ~12% mà lại còn tự tin | **Không đoán tỷ giá.** Chỉ quy đổi khi ảnh chụp **mang theo** tỷ giá còn mới (bên dưới); không có thì mã đó vào `unchecked()` kèm lý do, và phải xuất hiện ở tin nhắn mở phiên |
 
 Điều cuối cùng là chỗ khác biệt giữa **đứng ngoài** và **im lặng**: một mã scanner
 không canh được thì mình phải tự canh, và mình chỉ tự canh được nếu **biết**.
 Thiếu `cur` cũng vào đó luôn — "không biết" thì không phải là USD.
 
+#### Tỷ giá: app gửi, VM quy đổi
+
+Tài khoản ở đây lưu bằng **EUR** (`st.account.currency` viết cứng `'EUR'`), nên với
+cách trên thì phần lớn vị thế **không bao giờ được canh cắt lỗ trong phiên** — đúng
+cái việc mà `stop_only` tồn tại để làm. Nên ảnh chụp mang thêm một trường:
+
+```json
+"fx": { "eurUsd": 1.1725, "asOf": "2026-09-28" }
+```
+
+⚠️ **Vì sao app gửi chứ không phải VM tự lấy.** yfinance có `EURUSD=X`, tự lấy thì
+dễ hơn nhiều. Nhưng lúc đó mức cắt lỗ trong tin nhắn được tính bằng **một tỷ giá
+khác** với tỷ giá mà bảng portfolio trong app đang hiện, và người đọc có **hai con
+số cho cùng một mức stop** mà không có cách nào biết số nào đúng. Một nguồn thì sai
+cũng sai ở một chỗ.
+
+⚠️ **Vì sao `asOf` là bắt buộc, và tỷ giá cũ thì TỪ CHỐI.** Khoá này ghi lúc lưu
+portfolio, nên một sổ không ai chạm tới ba tháng vẫn mang theo tỷ giá ba tháng
+tuổi. Quy đổi bằng nó là dựng lại **đúng** cái lỗi mà cả cơ chế này sinh ra để
+tránh: một mức tự tin nhưng sai. Nên `pos_fx_stale_d` (7 ngày) là **hạn sử dụng
+thật** — khác `pos_stale_h` ở trên, cái đó chỉ làm tin nhắn *nói* là cũ và không bao
+giờ bỏ dữ liệu đi. Quá hạn → `cmp_why="ty_gia_cu"`, mã đó về lại `unchecked()`, và
+`fx_note()` nói ra là **không** dùng, kèm cách sửa (mở app một lần).
+
+Một con số ngoài khoảng `0.5 … 2.0` bị coi như **không có tỷ giá**, không phải được
+dùng: lấy `232.5` (một giá cổ phiếu lọt vào trường này) làm tỷ giá thì mức cắt lỗ
+bay lên 40 nghìn và **không bao giờ** bị xuyên — một cảnh báo im lặng mãi mãi.
+
+Mọi con số đã quy đổi phải **tự giải thích được**: người dùng đặt `640 EUR` chứ
+không đặt `750.40 USD`, nên tin nhắn và bảng `<pre>` đều mang cả hai số cùng tỷ giá
+(`STOP  750.40   (= 640.00 EUR x 1.1725)`). Một tin nhắn chỉ có `750.40` đọc như
+scanner **nhớ sai** mức cắt lỗ của họ, và đó là cách người ta thôi tin một hệ thống
+cảnh báo.
+
+`MIXED` (cùng một mã có lô EUR và lô USD) **không đi vào đường quy đổi**: không có
+**một** đơn vị để quy đổi *từ* đó. Nó có lý do riêng (`tron_tien_te`) vì cách sửa
+khác hẳn — tách tài khoản, chứ không phải đợi tỷ giá mới.
+
 ```python
-d = positions.load()                    # {known, n, rows, warn, ts, age_h, old, note}
+d = positions.load()                    # {known, n, rows, warn, ts, age_h, old, note, fx}
 positions.watched(d)                    # các mã canh được stop thật
 positions.unchecked(d)                  # [(mã, lý do tiếng Việt)] → tin nhắn mở phiên
-positions.stop_hit(d["rows"]["NVDA"], px)   # {hit, n, ok, why}; bằng nhau TÍNH LÀ xuyên
+positions.fx_note(d)                    # câu về tỷ giá cho tin nhắn mở phiên ("" nếu không có)
+positions.stop_hit(d["rows"]["NVDA"], px)   # {hit, hit_raw, cur, conv, n, ok, why}
+                                            # `hit` LUÔN là USD; bằng nhau TÍNH LÀ xuyên
 ```
+
+`row["stops"]` giữ **nguyên** số trong đơn vị đang lưu để hiện lại; `row["stops_usd"]`
+là danh sách duy nhất từng được đem so với báo giá — `None` = không so được (xem
+`cmp_why`), `[]` = so được nhưng không có mức nào.
 
 ```bash
 python positions.py                              # selftest, không mạng
@@ -2999,7 +3043,7 @@ nào chạy trên chúng.
 
 | Luật | Kích khi | Không kích khi |
 |---|---|---|
-| `stop` | giá ≤ mức cắt lỗ **cao nhất** của một vị thế đang mở | mã nhập bằng EUR, chưa có stop, chưa có báo giá (→ `unchecked`, và nói ra) |
+| `stop` | giá ≤ mức cắt lỗ **cao nhất** của một vị thế đang mở, đã quy về USD | mã lưu bằng EUR mà ảnh chụp không kèm tỷ giá còn mới, mã `MIXED`, chưa có stop, chưa có báo giá (→ `unchecked`, và nói ra) |
 | `trigger` | giá ≥ `trigger` **và** RVol đã chuẩn hoá ≥ 1.5× | giá **mở cửa** đã ở trên `trigger` (đó là gap, không phải "chạm điểm vào"), hoặc không tính được RVol |
 | `gap` | \|giá mở / nến quyết định − 1\| ≥ 3% | thiếu giá mở hoặc thiếu nến quyết định |
 

@@ -195,6 +195,11 @@ def render_pos(v: WatchView) -> list[str]:
         xem = positions.watched(p)
         if xem:
             body.append(f"Đang canh cắt lỗ: <b>{esc(', '.join(xem))}</b>")
+        # Ty gia: bao nhieu la quy doi, va bang ty gia nao. Phai o day chu khong
+        # chi o tung canh bao - tin mo phien la cho nguoi doc quyet dinh hom nay
+        # co tin cac muc do hay khong.
+        if (cau := positions.fx_note(p)):
+            body.append(f"<i>{esc(cau)}</i>")
     # Ma bi dung ngoai phai hien ra kem LY DO. "Khong canh" ma khong noi thi
     # doc thanh "khong co gi dang lo".
     for sym, why in positions.unchecked(p):
@@ -302,8 +307,17 @@ def _plan_panel(f: dict) -> str:
 
 def _stop_panel(a: dict) -> str:
     f = a.get("fields") or {}
+    # Khi muc cat lo la so QUY DOI, cot STOP phai noi ngay ben canh no den tu
+    # dau. Mot con so USD dung mot minh se khong khop voi con so nguoi dung nho
+    # la minh da dat, va ho se nghi canh bao bi loi.
+    #
+    # `x` chu khong phai `×`: khoi <pre> phai ASCII thuan (xem
+    # test_panel_pre_chi_co_ASCII) - mot ky tu rong khac lam lech ca bang.
+    cv = f.get("conv") or {}
+    tu_dau = (f"   (= {_px(f.get('hit_raw'))} {cv.get('cur', '?')} x "
+              f"{cv['rate']:.4f})" if cv and cv.get("rate") else "")
     lines = [f"{'GIA':<9}{_px(a.get('px')):>9}",
-             f"{'STOP':<9}{_px(f.get('hit')):>9}"]
+             f"{'STOP':<9}{_px(f.get('hit')):>9}" + tu_dau]
     if (sh := quotes._num(f.get("shares"))) is not None:
         acc = ", ".join(str(x) for x in (f.get("accts") or []))
         lines.append(f"{'SO CP':<9}{sh:>9.0f}" + (f"   ({acc})" if acc else ""))
@@ -401,11 +415,17 @@ def render_summary(v: WatchView) -> str:
 def _demo() -> list[tuple[str, str]]:
     day = "2026-09-25"
     ts = "2026-09-25T15:42:00+00:00"
+    # Ba dong CO Y khac nhau: USD (canh truc tiep), EUR co ty gia (canh bang so
+    # quy doi), MIXED (ty gia khong giup duoc - van phai dung ngoai va noi ra).
     pos = positions.parse(
         {"rows": [{"sym": "AAPL", "shares": 40, "avgCost": 210.0, "cur": "USD",
                    "stops": [198.0], "accts": ["IBKR"]},
                   {"sym": "ASML", "shares": 5, "avgCost": 700.0, "cur": "EUR",
-                   "stops": [640.0], "accts": ["DEGIRO"]}],
+                   "stops": [640.0], "accts": ["DEGIRO"]},
+                  {"sym": "MSFT", "shares": 8, "avgCost": 400.0, "cur": "MIXED",
+                   "stops": [380.0], "accts": ["IBKR", "DEGIRO"]}],
+         "fx": {"eurUsd": 1.1725,
+                "asOf": dt.datetime.now(dt.UTC).date().isoformat()},
          "warn": []}, int(dt.datetime.now(dt.UTC).timestamp() * 1000) - 3_600_000)
     watch = [{"sym": "NVDA", "trigger": 102.0, "stop": 97.0, "target": 112.0,
               "size_pct": 0.2},
@@ -427,6 +447,16 @@ def _demo() -> list[tuple[str, str]]:
             "detail": "giá 197.40 đã xuyên mức cắt lỗ 198.00",
             "fields": {"hit": 198.0, "n_hit": 1, "shares": 40.0,
                        "accts": ["IBKR"], "stops": [198.0]}}
+    # Cung mot luat nhung muc cat lo la so QUY DOI: kiem rang tin nhan mang ca
+    # con so goc bang EUR, khong chi con so USD.
+    stop_eur = {"rule": "stop", "tier": 1, "sym": "ASML", "px": 748.0, "ts": ts,
+                "age_sec": 960.0, "val": 750.4,
+                "detail": "giá 748.00 đã xuyên mức cắt lỗ 640.00 EUR "
+                          "(= 750.40 USD theo tỷ giá 1.1725)",
+                "fields": {"hit": 750.4, "n_hit": 1, "hit_raw": 640.0,
+                           "conv": {"rate": 1.1725, "as_of": day, "cur": "EUR"},
+                           "shares": 5.0, "accts": ["DEGIRO"],
+                           "stops": [640.0]}}
     gap = {"rule": "gap", "tier": 1, "sym": "MSFT", "px": 452.0, "ts": ts,
            "age_sec": 960.0, "val": 0.043,
            "detail": "mở cửa gap lên 4.3% so với nến quyết định (433.00 → 451.60)",
@@ -444,6 +474,8 @@ def _demo() -> list[tuple[str, str]]:
             ("MO PHIEN (downtrend, tin duy nhat)", render_open(im)),
             ("CANH BAO: cham diem vao", render_alert(trig, "yf")),
             ("CANH BAO: xuyen cat lo", render_alert(stop, "yf", pos=pos)),
+            ("CANH BAO: xuyen cat lo (quy doi)",
+             render_alert(stop_eur, "yf", pos=pos)),
             ("CANH BAO: gap", render_alert(gap, "yf")),
             ("TONG KET", render_summary(sm)),
             ("TONG KET (khong canh gi)",
@@ -461,7 +493,15 @@ def _smoke() -> None:
     d = dict(_demo())
     assert "trễ 16 phút" in d["CANH BAO: cham diem vao"]
     assert "im lặng" in d["MO PHIEN (downtrend, tin duy nhat)"]
-    assert "EUR" in d["MO PHIEN (full)"], "ma dung ngoai phai hien ra"
+    # Tin mo phien phai noi ca hai: da quy doi bang ty gia nao, VA ma nao van
+    # dung ngoai vi ty gia khong cuu duoc no.
+    mo = d["MO PHIEN (full)"]
+    assert "1.1725" in mo, "quy doi ma khong noi ty gia thi khong kiem duoc"
+    assert "ASML" in mo and "tách tài khoản" in mo, mo
+    # Canh bao quy doi phai mang ca con so goc: chi so USD se doc nhu scanner
+    # nho sai muc cat lo cua nguoi dung.
+    qd = d["CANH BAO: xuyen cat lo (quy doi)"]
+    assert "640.00 EUR" in qd and "750.40" in qd and "1.1725" in qd, qd
     assert keyboard("") is None, "chua cau hinh dashboard thi khong co ban phim"
     assert keyboard("https://x.dev")["inline_keyboard"][0][0]["url"] \
         == "https://x.dev"

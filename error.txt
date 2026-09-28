@@ -595,3 +595,109 @@ Specified filename v does not exist.
 /home/ubuntu/scanner/state/baseline.db:
                      ubuntu    184701 F.... python
                      ubuntu    193387 F.... python
+
+================================================================================
+QUY ĐỔI EUR→USD CHO LUẬT `stop` (viết 2026-09-28)
+================================================================================
+
+Vấn đề: tài khoản trong app lux-lookthrough lưu bằng **EUR** (viết cứng), nên
+`positions.py` xếp gần như MỌI vị thế vào `unchecked()` với lý do `tien_te` —
+đúng luật cũ ("không quy đổi, không đoán tỷ giá") nhưng kết quả là luật `stop`
+của Tier 1 gần như không canh được gì. Đó chính là thứ `stop_only` tồn tại để
+làm, nên phải sửa.
+
+Cách sửa: **app gửi tỷ giá, VM quy đổi.** Ảnh chụp `scanner:positions` mang thêm
+
+    "fx": { "eurUsd": 1.1725, "asOf": "2026-09-28" }
+
+VÌ SAO KHÔNG ĐỂ VM TỰ LẤY `EURUSD=X` TỪ yfinance — dễ hơn nhiều và không phải sửa
+app. Nhưng lúc đó mức cắt lỗ trong tin nhắn Telegram được tính bằng MỘT TỶ GIÁ
+KHÁC với tỷ giá bảng Portfolio trong app đang hiện. Người đọc có HAI con số cho
+cùng một mức stop và không có cách nào biết số nào đúng. Một nguồn thì sai cũng
+sai ở một chỗ.
+
+VÌ SAO `asOf` LÀ BẮT BUỘC VÀ TỶ GIÁ CŨ THÌ TỪ CHỐI — khoá đó được ghi lúc LƯU
+portfolio, nên một sổ không ai chạm tới ba tháng vẫn mang theo tỷ giá ba tháng
+tuổi. Quy đổi bằng nó là dựng lại ĐÚNG cái lỗi mà cả cơ chế này sinh ra để tránh:
+một mức tự tin nhưng sai. Nên `config.INTRADAY["pos_fx_stale_d"] = 7` là HẠN SỬ
+DỤNG THẬT — khác `pos_stale_h` (30 giờ), cái đó chỉ làm tin nhắn NÓI là cũ và
+không bao giờ bỏ dữ liệu đi. Quá hạn → `cmp_why="ty_gia_cu"`, mã đó về lại
+`unchecked()`, và `fx_note()` nói ra là KHÔNG dùng kèm cách sửa.
+
+Một con số ngoài khoảng 0.5…2.0 bị coi như KHÔNG CÓ tỷ giá, không phải được dùng:
+lấy 232.5 (một giá cổ phiếu lọt vào trường này) làm tỷ giá thì mức cắt lỗ bay lên
+40 nghìn và KHÔNG BAO GIỜ bị xuyên — một cảnh báo im lặng mãi mãi. 1.0 nằm trong
+khoảng và phải nằm trong: năm 2022 EURUSD thật sự quanh 1.0.
+
+
+--- File nào đổi ---
+
+  positions.py     `_fx()` mới (hình dạng / khoảng / tuổi); `_row()` tính sẵn
+                   `stops_usd`, `cmp_why`, `conv`; `stop_hit()` thêm `hit_raw`,
+                   `cur`, `conv`; `fx_note()` mới; 2 câu mới trong WHY_UNCHECKED
+                   (`ty_gia_cu`, `tron_tien_te`).
+  config.py        `pos_fx_stale_d: 7`.
+  watch.py         luật `stop` ghi cả hai con số vào `detail`; `fields` thêm
+                   `hit_raw` và `conv`.
+  render_watch.py  panel `<pre>` thêm dòng `(= 640.00 EUR x 1.1725)`; tin nhắn mở
+                   phiên thêm câu `fx_note()`.
+  README.md        mục 12.8: bảng ba cạm bẫy đổi dòng thứ ba, thêm hẳn một mục
+                   "Tỷ giá: app gửi, VM quy đổi".
+
+`comparable(row)` và `stop_hit(row, px)` GIỮ NGUYÊN chữ ký — phán quyết quy đổi
+được tính sẵn vào từng dòng lúc `parse()`, nên `watch.py`, `watchd.py`,
+`render_watch.py` không phải mang tỷ giá đi theo.
+
+`row["stops"]` giữ NGUYÊN số trong đơn vị đang lưu để hiện lại; `row["stops_usd"]`
+là danh sách duy nhất từng được đem so với báo giá: `None` = không so được (xem
+`cmp_why`), `[]` = so được nhưng không có mức nào.
+
+`MIXED` (cùng một mã có lô EUR và lô USD) KHÔNG đi vào đường quy đổi: không có MỘT
+đơn vị để quy đổi TỪ đó. Lý do riêng (`tron_tien_te`) vì cách sửa khác hẳn — tách
+tài khoản, chứ không phải đợi tỷ giá mới.
+
+Mọi con số đã quy đổi phải TỰ GIẢI THÍCH ĐƯỢC: người dùng đặt 640 EUR chứ không
+đặt 750.40 USD. Một tin nhắn chỉ có 750.40 đọc như scanner NHỚ SAI mức cắt lỗ của
+họ, và đó là cách người ta thôi tin một hệ thống cảnh báo. Nên cả `detail` lẫn
+panel `<pre>` đều mang cả hai số cùng tỷ giá.
+
+Cạm bẫy đã sập một lần khi làm: dùng `×` trong khối `<pre>` làm
+`test_panel_pre_chi_co_ASCII` đỏ. Khối `<pre>` phải ASCII thuần — một ký tự rộng
+khác làm lệch cả bảng trên điện thoại. Dùng `x`.
+
+
+--- Kiểm ---
+
+  python -m pytest -q          775 passed (test_positions.py: 46, thêm 13 test mới)
+  python positions.py          smoke ok
+  python watch.py              smoke ok
+  python render_watch.py       smoke ok
+
+13 test mới phủ: quy đổi bằng tỷ giá còn mới (`stops` gốc không đổi), mức đem ra
+so là mức ĐÃ quy đổi, cảnh báo mang cả hai con số, `hit_raw` khớp đúng mức bị
+xuyên khi có nhiều mức, USD không bị tỷ giá làm lệch, tỷ giá cũ thì TỪ CHỐI,
+ngưỡng tuổi lấy từ config, ngày lệch về tương lai không thành tuổi âm, số không
+phải tỷ giá bị bỏ, tỷ giá không có ngày thì không dùng, bản app cũ không gửi `fx`
+thì hành vi y như trước, `fx_note()`, và tỷ giá không cứu được dòng thiếu `cur`.
+
+
+--- Triển khai TRÊN VM ---
+
+    cd ~/scanner
+    git pull
+    source .venv/bin/activate
+    python -m pytest -q                 # phải 775 passed
+    sudo systemctl restart watchd
+    systemctl status watchd --no-pager
+
+KHÔNG restart `scanner` (main.py): file này không đụng gì tới nó, và chỉ được có
+MỘT tiến trình `main.py` chạy cùng lúc (Telegram getUpdates 409).
+
+Hai bên KHÔNG phụ thuộc thứ tự nhau: bản VM mới đọc ảnh chụp cũ (không có `fx`)
+thì xử sự y như trước; ảnh chụp mới gửi tới bản VM cũ thì trường `fx` bị bỏ qua.
+Nhưng THIẾU MỘT TRONG HAI thì vị thế EUR vẫn không được canh. Phía app còn cần
+deploy Pages RỒI LƯU PORTFOLIO một lần — xem lux-lookthrough/error.txt, VM-6 và
+CHAT-20 mục E.
+
+Sau đó tỷ giá phải được làm mới ít nhất 7 ngày một lần, tức là mở app một lần mỗi
+tuần. Quá hạn thì tin nhắn mở phiên NÓI RA và nói cách sửa, chứ không im lặng.

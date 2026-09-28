@@ -416,6 +416,19 @@ INTRADAY = {
     # thu Hai canh cat lo se tat, tuc la dung o cho nguy hiem nhat.
     # 30 gio chu khong 24: luu luc chieu hom truoc van con la "moi" sang hom sau.
     "pos_stale_h": 30,
+
+    # Tuoi toi da (NGAY) cua ty gia EURUSD di kem anh chup, de con dam quy doi
+    # mot muc cat lo EUR sang USD.
+    #
+    # ⚠️ CAI NAY THI LA HAN SU DUNG THAT, khac `pos_stale_h` ngay tren. Mot anh
+    # chup cu mot tuan van dung tung chu vi vi the khong tu doi; mot TY GIA cu
+    # mot tuan thi khong, vi EURUSD doi moi ngay. Qua nguong nay thi positions.py
+    # TU CHOI quy doi va ma do vao `unchecked()` - dung lai cach cu, tuc la dung
+    # ngoai va noi ra. Quy doi bang ty gia ba thang tuoi la dung lai chinh cai loi
+    # ma ca co che nay sinh ra de tranh: mot muc tu tin nhung sai.
+    # 7 ngay: du cho mot tuan khong mo app (cuoi tuan + le), va EURUSD hiem khi
+    # chay hon ~1% trong mot tuan - nho hon khoang cach tu gia den stop.
+    "pos_fx_stale_d": 7,
 }
 
 

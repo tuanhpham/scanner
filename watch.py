@@ -190,12 +190,20 @@ def evaluate(rows: list[dict], frame: dict, gate: dict, pos: dict,
         h = positions.stop_hit(row, q["px"])
         if h["hit"] is None:
             continue
+        # Co quy doi thi cau phai mang ca con so NGUOI DUNG DAT. Chi hien so USD
+        # se doc nhu scanner nho sai muc cat lo cua ho, va lan sau ho khong tin
+        # canh bao nua - do la cach mat mot he thong canh bao.
+        cv = h.get("conv")
+        vi_tri = (f" mức cắt lỗ {h['hit_raw']:.2f} {cv['cur']} "
+                  f"(= {h['hit']:.2f} USD theo tỷ giá {cv['rate']:.4f})"
+                  if cv else f" mức cắt lỗ {h['hit']:.2f}")
         cands.append({
             "rule": "stop", "tier": 1, "sym": sym, "px": q["px"],
             "ts": q["ts"], "age_sec": q["age_sec"], "val": h["hit"],
-            "detail": (f"giá {q['px']:.2f} đã xuyên mức cắt lỗ {h['hit']:.2f}"
+            "detail": (f"giá {q['px']:.2f} đã xuyên" + vi_tri
                        + (f" ({h['n']} mức bị xuyên)" if h["n"] > 1 else "")),
             "fields": {"hit": h["hit"], "n_hit": h["n"],
+                       "hit_raw": h.get("hit_raw"), "conv": cv,
                        "shares": row.get("shares"),
                        "accts": row.get("accts") or [],
                        "stops": row.get("stops") or []},
@@ -496,11 +504,22 @@ def _smoke() -> None:
     c8, _ = evaluate(rows, {**frame(102.5, 900_000), **fr},
                      {"mode": "stop_only"}, pos, sess, G)
     assert {a["rule"] for a in c8} == {"stop"}, c8
-    # EUR: khong canh, va positions.unchecked() la cho noi ra.
+    # EUR khong co ty gia di kem: khong canh, va positions.unchecked() la cho
+    # noi ra.
     eur = positions.parse({"rows": [{"sym": "AAPL", "shares": 10, "cur": "EUR",
                                      "stops": [112]}]},
                           int(now.timestamp() * 1000), now=now)
     assert evaluate([], fr, {"mode": "stop_only"}, eur, sess, G)[0] == []
+    # EUR CO ty gia con moi: canh, va cau phai mang ca hai con so.
+    eq = positions.parse({"rows": [{"sym": "AAPL", "shares": 10, "cur": "EUR",
+                                    "stops": [90]}],
+                          "fx": {"eurUsd": 1.2, "asOf": now.date().isoformat()}},
+                         int(now.timestamp() * 1000), now=now)
+    c9, _ = evaluate([], fr, {"mode": "stop_only"}, eq, sess, G)
+    assert [a["rule"] for a in c9] == ["stop"] and c9[0]["val"] == 108.0, c9
+    assert "90.00 EUR" in c9[0]["detail"] and "108.00 USD" in c9[0]["detail"], \
+        c9[0]["detail"]
+    assert "1.2000" in c9[0]["detail"], c9[0]["detail"]
 
     # decide(): 10 phut dau phien thi giu lai, ke ca stop.
     st = {"fired": {}, "last": {}, "n2": 0}

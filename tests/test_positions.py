@@ -35,9 +35,18 @@ def ms(h_ago: float = 1.0) -> int:
     return int((NOW.timestamp() - h_ago * 3600) * 1000)
 
 
-def val(*rows: dict, warn: list | None = None) -> dict:
-    return {"ts": "2026-09-25T15:00:00.000Z", "n": len(rows),
-            "rows": list(rows), "warn": warn or []}
+def val(*rows: dict, warn: list | None = None, fx: dict | None = None) -> dict:
+    """Than cua khoa. `fx` VANG MAT khi khong truyen, chu khong phai None: mot
+    ban app cu hon khong co truong do, va duong di do phai la duong mac dinh."""
+    v = {"ts": "2026-09-25T15:00:00.000Z", "n": len(rows),
+         "rows": list(rows), "warn": warn or []}
+    if fx is not None:
+        v["fx"] = fx
+    return v
+
+
+# Ty gia con moi so voi NOW (25.09.2026), dung cho phan lon cac test quy doi.
+FX = {"eurUsd": 1.2, "asOf": "2026-09-24"}
 
 
 def pos(sym="NVDA", shares=10, cur="USD", stops=(), **kw) -> dict:
@@ -49,6 +58,12 @@ def pos(sym="NVDA", shares=10, cur="USD", stops=(), **kw) -> dict:
 def one(row: dict, h_ago: float = 1.0) -> dict:
     """Mot dong da qua parse(), de khoi lap lai ba dong moi test."""
     return po.parse(val(row), ms(h_ago), now=NOW)["rows"][row["sym"].upper()]
+
+
+def one_fx(row: dict, fx: dict | None = None) -> dict:
+    """Nhu `one` nhung anh chup co mang ty gia con moi (FX)."""
+    return po.parse(val(row, fx=fx or FX), ms(),
+                    now=NOW)["rows"][row["sym"].upper()]
 
 
 # ────────────── 1. khong doc duoc != khong co vi the ──────────────
@@ -207,8 +222,15 @@ def test_EUR_phai_di_vao_tin_nhan_kem_ly_do_doc_duoc():
 
 
 def test_MIXED_cung_dung_ngoai():
-    """Mot ma co lo nhap EUR va lo nhap USD: khong chon duoc ben nao ma khong doan."""
-    assert po.comparable(one(pos(cur="MIXED", stops=[90]))) == "tien_te"
+    """Mot ma co lo luu bang EUR va lo bang USD: khong chon duoc ben nao ma
+    khong doan, va ty gia cung khong cuu duoc - khong co MOT don vi de quy doi
+    TU do. Ly do rieng chu khong dung chung voi EUR: cach sua khac han (tach
+    tai khoan, chu khong phai doi ty gia moi)."""
+    assert po.comparable(one(pos(cur="MIXED", stops=[90]))) == "tron_tien_te"
+    d = po.parse(val(pos(cur="MIXED", stops=[90]),
+                     fx={"eurUsd": 1.2, "asOf": "2026-09-25"}), ms(), now=NOW)
+    assert po.comparable(d["rows"]["NVDA"]) == "tron_tien_te"
+    assert "tách tài khoản" in dict(po.unchecked(d))["NVDA"]
 
 
 def test_thieu_tien_te_cung_la_dung_ngoai():
@@ -233,11 +255,155 @@ def test_moi_khoa_stop_hit_co_the_tra_ve_deu_co_cau_cua_no():
     """Ben goi tra cuu WHY_UNCHECKED de viet tin nhan. Mot khoa thieu o day la
     mot KeyError giua phien, tuc la mat canh bao vi mot dong chu."""
     r = one(pos(stops=[90]))
+    cu = {"eurUsd": 1.2, "asOf": "2026-06-01"}
     ra = {po.stop_hit(r, None)["why"],
           po.stop_hit(one(pos(stops=[])), 50)["why"],
           po.stop_hit(one(pos(cur="EUR", stops=[90])), 50)["why"],
+          po.stop_hit(one(pos(cur="MIXED", stops=[90])), 50)["why"],
+          po.stop_hit(one_fx(pos(cur="EUR", stops=[90]), cu), 50)["why"],
           po.stop_hit(one({"sym": "X", "shares": 1, "stops": [5]}), 4)["why"]}
     assert ra <= set(po.WHY_UNCHECKED), ra - set(po.WHY_UNCHECKED)
+    # Va nguoc lai: mot cau khong bao gio duoc dung la mot cau da chet.
+    assert ra == set(po.WHY_UNCHECKED), set(po.WHY_UNCHECKED) - ra
+
+
+# ────────────── 4b. ty gia di kem: quy doi, hoac tu choi ──────────────
+def test_co_ty_gia_con_moi_thi_quy_doi_va_canh_that():
+    """Ca ly do co co che nay: mot muc cat lo EUR truoc day khong duoc canh, nen
+    vi the o tai khoan EUR khong duoc bao ve trong phien."""
+    d = po.parse(val(pos(cur="EUR", stops=[175]), fx=FX), ms(), now=NOW)
+    r = d["rows"]["NVDA"]
+    assert r["stops"] == [175.0], "con so GOC phai giu nguyen de hien lai"
+    assert r["stops_usd"] == [210.0], r
+    assert po.comparable(r) is None and po.watched(d) == ["NVDA"]
+    assert po.unchecked(d) == []
+
+
+def test_muc_dem_ra_so_la_muc_da_QUY_DOI_chu_khong_phai_so_goc():
+    """Day dung la loi cu, chi nguoc chieu: so 175 EUR dem so voi bao gia USD se
+    canh o 175 USD, tuc la muon 17%. Phai so voi 210."""
+    r = one_fx(pos(cur="EUR", stops=[175]))
+    assert po.stop_hit(r, 211)["hit"] is None, "211 chua xuyen 210"
+    assert po.stop_hit(r, 209)["hit"] == 210.0
+    assert po.stop_hit(r, 176)["hit"] == 210.0, "176 da xuyen tu lau"
+
+
+def test_canh_bao_phai_mang_ca_hai_con_so():
+    """Nguoi dung dat 175 EUR chu khong dat 210 USD. Mot tin nhan chi co 210 doc
+    nhu scanner nho sai muc cat lo cua ho, va lan sau ho khong tin no nua."""
+    h = po.stop_hit(one_fx(pos(cur="EUR", stops=[175])), 200)
+    assert h["hit"] == 210.0 and h["hit_raw"] == 175.0, h
+    assert h["cur"] == "EUR" and h["conv"]["rate"] == 1.2, h
+    assert h["conv"]["as_of"] == FX["asOf"]
+
+
+def test_hit_raw_khop_dung_muc_bi_xuyen_khi_co_nhieu_muc():
+    """Chi so cua muc trong `stops_usd` phai dung cho ca `stops`. Lech mot buoc
+    la tin nhan noi mot muc ma he thong lai kiem mot muc khac."""
+    r = one_fx(pos(cur="EUR", stops=[100, 175]))
+    assert r["stops_usd"] == [210.0, 120.0]
+    h = po.stop_hit(r, 130)
+    assert h["hit"] == 210.0 and h["hit_raw"] == 175.0, h
+    h2 = po.stop_hit(r, 110)
+    assert h2["n"] == 2 and h2["hit_raw"] == 175.0, h2
+
+
+def test_USD_khong_bi_ty_gia_lam_thay_doi_gi():
+    """Co ty gia trong anh chup khong duoc lam mot dong USD lech di."""
+    r = one_fx(pos(cur="USD", stops=[90, 112]))
+    assert r["stops_usd"] == [112.0, 90.0] and r["conv"] is None
+    h = po.stop_hit(r, 100)
+    assert h["hit"] == 112.0 and h["hit_raw"] == 112.0
+
+
+def test_ty_gia_qua_cu_thi_TU_CHOI_quy_doi():
+    """BAT BIEN 4 chua doi: quy doi bang ty gia ba thang tuoi la dung lai chinh
+    cai loi ma co che nay sinh ra de tranh - mot muc tu tin nhung sai."""
+    d = po.parse(val(pos(cur="EUR", stops=[175]),
+                     fx={"eurUsd": 1.2, "asOf": "2026-06-01"}), ms(), now=NOW)
+    r = d["rows"]["NVDA"]
+    assert r["stops_usd"] is None and po.comparable(r) == "ty_gia_cu"
+    assert po.stop_hit(r, 100)["hit"] is None, "khong duoc canh"
+    assert po.watched(d) == []
+    # Va phai noi ro la vi TY GIA, khong phai vi EUR: cach sua khac nhau.
+    why = dict(po.unchecked(d))["NVDA"]
+    assert "tỷ giá" in why and "cũ" in why, why
+
+
+def test_nguong_tuoi_ty_gia_lay_tu_config():
+    ngay = config.INTRADAY["pos_fx_stale_d"]
+    trong = (NOW.date() - dt.timedelta(days=ngay)).isoformat()
+    ngoai = (NOW.date() - dt.timedelta(days=ngay + 1)).isoformat()
+    for as_of, mong in ((trong, True), (ngoai, False)):
+        d = po.parse(val(pos(cur="EUR", stops=[175]),
+                         fx={"eurUsd": 1.2, "asOf": as_of}), ms(), now=NOW)
+        assert d["fx"]["ok"] is mong, as_of
+        assert (d["rows"]["NVDA"]["stops_usd"] is not None) is mong, as_of
+    # Nguong 0 / thieu khoa = khong bao gio goi la cu.
+    d = po.parse(val(pos(cur="EUR", stops=[175]),
+                     fx={"eurUsd": 1.2, "asOf": "2020-01-01"}), ms(), now=NOW,
+                 g={})
+    assert d["fx"]["ok"] is True and d["rows"]["NVDA"]["stops_usd"] == [210.0]
+
+
+def test_ngay_ty_gia_lech_ve_tuong_lai_khong_thanh_tuoi_am():
+    d = po.parse(val(pos(cur="EUR", stops=[175]),
+                     fx={"eurUsd": 1.2, "asOf": "2026-12-31"}), ms(), now=NOW)
+    assert d["fx"]["age_d"] == 0.0 and d["fx"]["ok"] is True
+
+
+def test_mot_so_khong_phai_ty_gia_bi_bo_thay_vi_dung():
+    """Mot gia co phieu lot vao truong nay, hoac mot so 0, phai bi coi nhu KHONG
+    CO ty gia - khong phai duoc dung. Dung 232.5 lam ty gia thi muc cat lo bay
+    len 40 nghin va khong bao gio bi xuyen: mot canh bao im lang mai mai."""
+    for xau in ({"eurUsd": 0}, {"eurUsd": -1.2, "asOf": "2026-09-24"},
+                {"eurUsd": 232.5, "asOf": "2026-09-24"},
+                {"eurUsd": float("nan"), "asOf": "2026-09-24"},
+                {"eurUsd": "abc", "asOf": "2026-09-24"}):
+        d = po.parse(val(pos(cur="EUR", stops=[175]), fx=xau), ms(), now=NOW)
+        assert d["fx"] is None, xau
+        assert po.comparable(d["rows"]["NVDA"]) == "tien_te", xau
+
+
+def test_ty_gia_khong_biet_cua_ngay_nao_thi_khong_duoc_dung():
+    """Khong co `asOf` thi khong kiem duoc tuoi, va khong kiem duoc tuoi thi
+    khong duoc quy doi - de ngo cua cho dung ty gia ba thang tuoi."""
+    for xau in ({"eurUsd": 1.2}, {"eurUsd": 1.2, "asOf": ""},
+                {"eurUsd": 1.2, "asOf": "hom qua"},
+                {"eurUsd": 1.2, "asOf": "2026-13-45"}, 1.2, "1.2", [], None):
+        d = po.parse(val(pos(cur="EUR", stops=[175]), fx=xau), ms(), now=NOW)
+        assert d["fx"] is None, xau
+        assert d["rows"]["NVDA"]["stops_usd"] is None, xau
+
+
+def test_ban_app_cu_khong_gui_ty_gia_thi_hanh_vi_y_nhu_truoc():
+    """Deploy doc lap: VM co the chay ban moi truoc khi app duoc deploy."""
+    d = po.parse(val(pos(cur="EUR", stops=[175])), ms(), now=NOW)
+    assert d["fx"] is None
+    assert po.comparable(d["rows"]["NVDA"]) == "tien_te"
+    assert po.watched(d) == [] and len(po.unchecked(d)) == 1
+
+
+def test_fx_note_noi_du_ty_gia_va_ngay():
+    """Mot muc cat lo hien ra bang USD ma nguoi dung dat bang EUR thi ho phai
+    biet con so do tu dau, khong thi ho tuong minh nho sai."""
+    d = po.parse(val(pos(cur="EUR", stops=[175]), fx=FX), ms(), now=NOW)
+    cau = po.fx_note(d)
+    assert "1.2000" in cau and FX["asOf"] in cau, cau
+    # Khong co ty gia thi khong co gi de noi - khong duoc noi mot cau rong.
+    assert po.fx_note(po.parse(val(pos()), ms(), now=NOW)) == ""
+    assert po.fx_note(po.parse(None, ms(), now=NOW)) == ""
+    # Cu thi cau phai noi ra la KHONG dung, va noi cach sua.
+    cu = po.parse(val(pos(cur="EUR", stops=[175]),
+                      fx={"eurUsd": 1.2, "asOf": "2026-06-01"}), ms(), now=NOW)
+    assert "KHÔNG" in po.fx_note(cu) and "mở app" in po.fx_note(cu)
+
+
+def test_ty_gia_khong_lam_mot_ma_thieu_cur_thanh_canh_duoc():
+    """Khong biet don vi thi ty gia khong giup gi: khong biet quy doi TU dau."""
+    d = po.parse(val({"sym": "X", "shares": 1, "stops": [5]}, fx=FX),
+                 ms(), now=NOW)
+    assert po.comparable(d["rows"]["X"]) == "khong_biet_tien_te"
 
 
 # ────────────── 5. rac vao, khong chet ra ──────────────
@@ -280,6 +446,7 @@ def test_khong_mang_theo_tien_von_lai_lo():
     for k in ("cash", "equity", "realized", "unrealized", "accountId"):
         assert k not in r, k
     assert set(r) == {"sym", "shares", "avg_cost", "stops", "cur",
+                      "stops_usd", "cmp_why", "conv",
                       "with_stop", "no_stop", "accts"}, sorted(r)
 
 
