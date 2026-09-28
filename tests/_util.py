@@ -12,6 +12,7 @@ file test chay o ca hai noi, chi khac so test duoc bo qua.
 """
 from __future__ import annotations
 
+import contextlib
 import importlib
 import sys
 import traceback
@@ -62,6 +63,47 @@ def need(*mods: str):
                 raise SystemExit(0) from None
             _skip(reason)
     return out[0] if len(out) == 1 else out
+
+
+@contextlib.contextmanager
+def cloud(answer=None):
+    """Gia lap `push.get_full()` — de KHONG test nao doc `.env` de biet minh
+    phai khang dinh dieu gi.
+
+    `answer` la thu get_full() tra ve:
+      None                              khong doc duoc (thieu SCANNER_PUSH_URL /
+                                        SCANNER_TOKEN, mang chet, khoa chua ton tai)
+      {"value": ..., "updatedAt": ms}   doc duoc
+      mot Exception                     duoc nem ra, de kiem duong except
+
+    VI SAO PHAI CO. Hai test tung mo dau bang "Tren may nay push.ready() False"
+    roi khang dinh known is False. Cau do dung tren may dev va SAI tren may da
+    cau hinh xong: o do get_full() goi THAT ra Cloudflare, doc duoc vi the that,
+    va test do voi `assert True is False` — mot that bai khong noi gi ve code.
+    Te hon la chieu nguoc lai: mot ngay nao do code vo o duong "doc duoc" thi
+    may dev van xanh, vi o day duong do chua bao gio duoc di qua.
+
+    Doc mang trong test con hai cai gia nua: no ton request cua Cloudflare, va
+    no lam test phu thuoc internet. Ca hai file goi ham nay deu co mot dong
+    trong docstring hua rang minh khong ra mang.
+
+    Khong dung fixture `monkeypatch`: xem chu thich trong test_regime.py — moi
+    file tests/ phai chay duoc bang `python tests/test_x.py`, va _util.run() goi
+    ham test KHONG co tham so.
+    """
+    push = importlib.import_module("push")
+    goc = push.get_full
+    if isinstance(answer, BaseException):
+        def gia(key):
+            raise answer
+    else:
+        def gia(key):
+            return answer
+    push.get_full = gia
+    try:
+        yield
+    finally:
+        push.get_full = goc
 
 
 def run(ns: dict) -> int:

@@ -15,8 +15,10 @@ Bon bat bien, xep theo do IM LANG cua loi neu no vo:
    khong co muc nao. Dung ngoai thi duoc, im lang thi khong.
 
 Thuan stdlib: parse() la ham thuan nen khong file nao o day can mang. Duong ra
-mang (load()) chi duoc kiem o TRUONG HOP THAT BAI - va do cung la truong hop
-quan trong hon.
+mang (load()) duoc kiem qua `_util.cloud`, tuc la cau tra loi cua Cloudflare
+duoc GIA LAP ca ba kieu: None, doc duoc, va nem loi. Truoc day chi co kieu None
+va no khong duoc gia lap gi ca — test do tin vao viec may dang chay khong co
+`.env`, nen no do tren may co, va duong "doc duoc" thi khong ai kiem.
 """
 from __future__ import annotations
 
@@ -97,10 +99,39 @@ def test_hai_truong_hop_do_khong_bao_gio_cho_ra_cung_mot_cau():
 
 
 def test_load_khi_khong_co_mang_tra_ve_khong_biet():
-    """Tren may nay push.ready() False -> get_full() None. Duong that bai that."""
-    d = po.load(now=NOW)
+    """get_full() tra None: thieu token, mang chet, hoac khoa chua ton tai.
+
+    Cau nay tung viet "tren may nay push.ready() False" va KHONG gia lap gi ca.
+    Tren may da cau hinh xong thi no doc vi the that ve va do. Mot test khong
+    duoc doc `.env` de biet minh phai khang dinh dieu gi — xem `_util.cloud`.
+    """
+    with _util.cloud(None):
+        d = po.load(now=NOW)
     assert d["known"] is False and d["n"] == 0, d
     assert d["note"], "im lang o day la kieu loi te nhat"
+
+
+def test_load_khi_doc_duoc_thi_lay_ca_dau_moc_cua_cloudflare():
+    """Nua con lai cua load(), truoc day khong co test nao di qua.
+
+    Duong nay chi chay tren may co `.env`, va o do no chay trong mot test dang
+    khang dinh dieu nguoc lai — nen no vua khong duoc kiem, vua lam test kia do.
+    """
+    js = {"value": val(pos(stops=[90])), "updatedAt": ms(2)}
+    with _util.cloud(js):
+        d = po.load(now=NOW)
+    assert d["known"] is True and d["n"] == 1, d
+    assert abs(d["age_h"] - 2) < 1e-6, d["age_h"]
+
+
+def test_load_khi_push_no_ra_loi_van_la_khong_biet_chu_khong_nem():
+    """`load()` duoc goi tu vong quet trong phien: nem ra o day la tat ca canh
+    cat lo cho den het phien. Ten loi phai co trong cau, neu khong thi khong ai
+    biet vi sao ca ngay khong canh gi."""
+    with _util.cloud(RuntimeError("cloudflare 500")):
+        d = po.load(now=NOW)
+    assert d["known"] is False and d["n"] == 0, d
+    assert "RuntimeError" in d["note"], d["note"]
 
 
 # ────────────── 2. tuoi chi de noi ra ──────────────

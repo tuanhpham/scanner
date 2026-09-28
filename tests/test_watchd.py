@@ -58,6 +58,18 @@ def db() -> sqlite3.Connection:
     return watch.con(Path(tempfile.mkdtemp()) / "t.db")
 
 
+def ctx_db_trong(cloud=None) -> dict:
+    """`load_ctx` tren mot DB rong, voi cau tra loi cua cloud DUOC GIA LAP.
+
+    `load_ctx` goi `positions.load()`, tuc la ra mang. Docstring cua file nay
+    hua "khong mang, khong Telegram", va ba cho goi duoi day da lang le pha loi
+    hua do tren may nao co `.env`: mot test kiem bang mui gio thi khong nen phu
+    thuoc vao Cloudflare co tra loi hay khong. Xem `_util.cloud`.
+    """
+    with _util.cloud(cloud):
+        return wd.load_ctx(D, Path(tempfile.mkdtemp()) / "trong.db", None, NOW)
+
+
 class Sink:
     """`send` gia. `ok=False` mo phong mat mang / Telegram tu choi."""
 
@@ -189,7 +201,7 @@ def test_stop_cua_vi_the_ngoai_danh_sach_van_duoc_gui():
 
 # ────────────── 4. dau vao hong mot phan ──────────────
 def test_DB_khong_co_bang_nao_thi_noi_ra_chu_khong_chet():
-    x = wd.load_ctx(D, Path(tempfile.mkdtemp()) / "trong.db", None, NOW)
+    x = ctx_db_trong()
     assert x["rows"] == [] and x["day"] == D
     # gate() tu tra stop_only khi khong doc duoc: mac dinh phai la DUNG NGOAI.
     assert x["gate"].get("mode") == "stop_only", x["gate"]
@@ -197,9 +209,28 @@ def test_DB_khong_co_bang_nao_thi_noi_ra_chu_khong_chet():
 
 
 def test_khong_doc_duoc_vi_the_la_khong_biet_chu_khong_phai_khong_co():
-    """Tren may nay push.ready() False -> load() tra known=False."""
-    x = wd.load_ctx(D, Path(tempfile.mkdtemp()) / "trong.db", None, NOW)
+    """get_full() tra None -> load() tra known=False, va ctx phai mang cau do.
+
+    Cau nay tung viet "tren may nay push.ready() False" va tin vao `.env` cua
+    may dang chay. Tren may da cau hinh xong thi vi the that ve duoc, known la
+    True, va test do — vi mot ly do khong lien quan gi den watchd.py.
+    """
+    x = ctx_db_trong()
     assert x["pos"]["known"] is False and x["pos"]["note"]
+
+
+def test_doc_duoc_vi_the_thi_ctx_mang_no_theo():
+    """Chieu con lai: `load_ctx` phai dat anh chup vao ctx chu khong chi khong
+    nem. Bo mat no thi watchd chay ca phien ma khong canh cat lo cho lo nao."""
+    x = ctx_db_trong({"value": {"ts": "2026-09-25T14:00:00.000Z", "n": 1,
+                                "rows": [{"sym": "NVDA", "shares": 10,
+                                          "avgCost": 100.0, "cur": "USD",
+                                          "stops": [97.0], "withStop": 10,
+                                          "noStop": 0, "accts": ["A"]}],
+                                "warn": []},
+                      "updatedAt": int((NOW.timestamp() - 3600) * 1000)})
+    assert x["pos"]["known"] is True and x["pos"]["n"] == 1, x["pos"]
+    assert "NVDA" in wd.syms_of(x), wd.syms_of(x)
 
 
 def test_ly_do_bo_qua_di_tu_tick_ra_tin_nhan_mo_phien():
@@ -217,7 +248,7 @@ def test_ly_do_bo_qua_di_tu_tick_ra_tin_nhan_mo_phien():
 def test_thieu_bang_mui_gio_thi_cau_canh_bao_di_vao_tin_mo_phien():
     """Khong co `tzdata` thi do tre lech 4-5 gio va moi bao gia bi coi la qua cu
     - ca phien im lang vi mot ly do khong ai doan duoc tu ben ngoai."""
-    x = wd.load_ctx(D, Path(tempfile.mkdtemp()) / "trong.db", None, NOW)
+    x = ctx_db_trong()
     assert x["warn"] == [w for w in x["warn"] if w], "khong duoc co cau rong"
     if quotes._et() is None:
         assert any("múi giờ" in w for w in x["warn"]), x["warn"]

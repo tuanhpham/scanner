@@ -701,3 +701,110 @@ CHAT-20 mục E.
 
 Sau đó tỷ giá phải được làm mới ít nhất 7 ngày một lần, tức là mở app một lần mỗi
 tuần. Quá hạn thì tin nhắn mở phiên NÓI RA và nói cách sửa, chứ không im lặng.
+
+================================================================================
+HAI TEST ĐỎ VÌ KHẲNG ĐỊNH MỘT CHUYỆN VỀ CÁI MÁY, KHÔNG PHẢI VỀ CODE (2026-09-28)
+================================================================================
+
+Triệu chứng: `773 passed, 2 failed` trên máy đã cấu hình xong, còn máy dev thì
+775 passed. Cùng một commit (02b21df), cây làm việc sạch cả hai bên.
+
+    tests/test_watchd.py   test_khong_doc_duoc_vi_the_la_khong_biet_...
+                           assert (True is False)
+    tests/test_positions.py test_load_khi_khong_co_mang_tra_ve_khong_biet
+                           AssertionError
+
+Nguyên nhân nằm ngay trong docstring của cả hai, viết y như nhau:
+
+    """Tren may nay push.ready() False -> load() tra known=False."""
+
+`push.ready()` là `bool(URL and TOKEN)`, đọc từ `SCANNER_PUSH_URL` và
+`SCANNER_TOKEN` lúc import. Máy dev không có `.env` → `get_full()` trả None →
+`load()` trả `known=False` → xanh. Máy đã đặt hai biến đó thì `get_full()` gọi
+THẬT ra Cloudflare, đọc về vị thế thật, `known=True`, và `assert True is False`.
+
+Hai test đó không kiểm code. Chúng kiểm xem cái máy đang chạy có `.env` hay
+không. Một test không được đọc `.env` để biết mình phải khẳng định điều gì.
+
+--- Chiều ngược lại còn tệ hơn, và đó mới là lý do phải sửa tận gốc ---
+
+Đỏ trên máy kia chỉ là chuyện gây khó chịu. Cái thật sự đáng lo là đường
+"ĐỌC ĐƯỢC" chưa từng có test nào đi qua. Trên máy dev nó không chạy được (không
+có token), còn trên máy có token thì nó chạy bên trong một test đang khẳng định
+điều NGƯỢC LẠI. Nên nếu `parse()` hay `load()` vỡ ở đường đọc thành công thì máy
+dev vẫn xanh và máy kia vẫn đỏ ĐÚNG hai test đó — tức là không phân biệt được
+"chưa mock" với "vừa làm hỏng đường đọc vị thế".
+
+Và ba chỗ khác trong `test_watchd.py` gọi `load_ctx()`, tức là cũng ra mạng thật,
+dù chúng chỉ kiểm bảng múi giờ và DB thiếu bảng. Docstring của file đó hứa
+"Khong mang, khong Telegram". Test ra mạng thì tốn request Cloudflare, phụ thuộc
+internet, và chậm không lý do.
+
+--- Cách sửa: `_util.cloud()` ---
+
+Một context manager trong `tests/_util.py` thay `push.get_full`:
+
+    with _util.cloud(None):                         # không đọc được
+    with _util.cloud({"value": ..., "updatedAt": ms})   # đọc được
+    with _util.cloud(RuntimeError("cloudflare 500"))    # ném lỗi
+
+Đặt ở `_util.py` vì cả hai file test đều cần. KHÔNG dùng fixture `monkeypatch`
+của pytest: mọi file trong `tests/` phải chạy được bằng `python tests/test_x.py`
+(xem `_util.main`), và `_util.run()` gọi hàm test KHÔNG có tham số — một fixture
+làm file đó chỉ chạy được dưới pytest. Cùng lý do đã ghi trong `test_regime.py`.
+
+Vá `push.get_full` chứ không vá `push.URL`/`TOKEN`: `positions.load()` làm
+`import push` BÊN TRONG thân hàm, nên nó lấy module từ `sys.modules` và thấy
+thuộc tính đã bị thay. Đặt lại `URL`/`TOKEN` cũng chặn được (đó là cách
+`test_push.py::test_thieu_env_tra_off` làm, và nó làm ĐÚNG — có lưu và trả lại),
+nhưng chỉ chặn được ĐƯỜNG THẤT BẠI. Muốn kiểm đường đọc được thì phải trả về dữ
+liệu, nên phải vá ở tầng `get_full`.
+
+--- File nào đổi ---
+
+  tests/_util.py          `cloud()` mới + `import contextlib`.
+  tests/test_positions.py test cũ được bọc trong `_util.cloud(None)`; thêm 2 test
+                          mới (đọc được thì lấy cả dấu mốc Cloudflare; get_full
+                          ném lỗi thì vẫn là KHÔNG BIẾT chứ không ném ra ngoài —
+                          `load()` được gọi từ vòng quét trong phiên, ném ra ở
+                          đó là tắt hết cảnh cắt lỗ cho tới hết phiên).
+                          Docstring đầu file sửa lại: câu "đường ra mạng chỉ được
+                          kiểm ở TRƯỜNG HỢP THẤT BẠI" không còn đúng.
+  tests/test_watchd.py    `ctx_db_trong(cloud=None)` mới, gom cả ba chỗ gọi
+                          `load_ctx` vào một nơi và không chỗ nào ra mạng; thêm
+                          test `load_ctx` MANG được ảnh chụp vào ctx (mất nó thì
+                          watchd chạy cả phiên mà không canh cắt lỗ lô nào).
+
+KHÔNG sửa một dòng code sản phẩm nào: `positions.load()`, `push.get_full()`,
+`watchd.load_ctx()` giữ nguyên. Lỗi nằm trong test.
+
+--- Kiểm ---
+
+  python -m pytest -q                                   778 passed
+  SCANNER_PUSH_URL=... SCANNER_TOKEN=... pytest -q       778 passed
+  python tests/test_positions.py                         48 ok · 0 fail
+  python tests/test_watchd.py                            24 ok · 0 fail
+
+Dòng thứ hai là phép kiểm quan trọng: đặt hai biến môi trường lên rồi chạy lại,
+`push.ready()` là True, và suite vẫn 778 — trước khi sửa thì đúng hai test kia
+đỏ trong điều kiện đó. Đã dựng lại được `assert True is False` bằng cách cho
+`get_full` trả về một ảnh chụp, chạy THÂN CŨ của hai test: cả hai FAIL. Nên đây
+là đúng nguyên nhân, không phải một giả thuyết gần đúng.
+
+Thời gian chạy không đổi (≈20s) khi có biến môi trường trỏ tới một URL không tồn
+tại — bằng chứng là không còn test nào chạm mạng: một lần gọi thật sẽ mất
+TIMEOUT 15s × TRIES 3.
+
+775 → 778 (thêm 3). Khối "Triển khai TRÊN VM" của mục trước ghi "phải 775
+passed" — con số đó nay đã cũ, đọc là 778.
+
+--- Triển khai TRÊN VM ---
+
+    cd ~/scanner
+    git pull
+    source .venv/bin/activate
+    python -m pytest -q                 # phải 778 passed
+    # KHÔNG cần restart gì: lần này chỉ có tests/ đổi.
+
+Trên VM `.env` CÓ token, nên đây chính là cái máy mà hai test kia đỏ. Sau
+`git pull` phải thấy 778 passed, không còn 2 failed.
