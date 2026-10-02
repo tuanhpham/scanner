@@ -13,6 +13,7 @@ import datetime as dt
 import json
 import os
 import sqlite3
+import sys
 import time
 import traceback
 from contextlib import closing
@@ -25,6 +26,7 @@ import halts
 import news
 import notifier
 import outcome
+import remote
 import render
 import scorer
 import store
@@ -534,6 +536,40 @@ async def loop_halts(st: State, ck: SessionClock) -> None:
         await asyncio.sleep(HALT_SEC)
 
 
+def scan_text(st: State, ck: SessionClock) -> str:
+    """"Quet thu" bam tu trang web: mot vong scorer.rank, KHONG gui Telegram,
+    KHONG luu DB. Chay ngay trong process nay (trong thread cua loop_remote)
+    vi mo main.py thu hai la dung luat 409 cua getUpdates."""
+    uni = st.universe or universe_live.build()
+    hits, rej = scorer.rank(uni, st.base, ck)
+    head = (f"universe {len(uni)} ma"
+            + ("" if st.universe else " (vua dung rieng, vong universe chua chay)")
+            + f" | baseline {len(st.base)} | qua_loc={rej.get('_qua_loc')}"
+            f" frac={rej.get('_frac')} | phien {session_state(ck)}")
+    rows = [f"  {h['sym']:<6} {h['score']:>5.1f}  rvol {h['rvol']:.1f}x"
+            for h in hits[:10]]
+    return "\n".join([head, *(rows or ["  (khong ma nao qua loc)"]),
+                      "", "khong gui Telegram, khong luu DB"])
+
+
+async def loop_remote(st: State, ck: SessionClock) -> None:
+    """Lenh tu trang Settings & Guides (xem remote.py). Moi lan doc la mot cuoc
+    goi HTTP, nen nam trong to_thread: mang treo khong duoc lam dung vong quet."""
+    rm = remote.Remote(extra={"scan": lambda: scan_text(st, ck)}, log=log)
+    await asyncio.to_thread(rm.boot)
+    while True:
+        try:
+            if await asyncio.to_thread(rm.tick) == "restart":
+                # Ket qua da len cloud. Thoat han: systemd (Restart=always) bat
+                # lai bang code moi. Khong can sudo, khong co process thu hai.
+                log("remote: thoat de systemd khoi dong lai")
+                sys.stdout.flush()
+                os._exit(3)
+        except Exception:  # noqa: BLE001
+            log("[remote] " + traceback.format_exc(limit=2))
+        await asyncio.sleep(remote.POLL_SEC)
+
+
 async def loop_news(st: State, ck: SessionClock) -> None:
     """Doc tin Alpaca moi 30s de biet VI SAO mot ma dang chay.
 
@@ -724,6 +760,9 @@ async def run(dry: bool, once: bool) -> None:
         tasks += [
             asyncio.create_task(loop_track(st, ck, dry)),
             asyncio.create_task(loop_outcome(st, ck, dry)),
+            # Khong chay trong --dry: mot `main.py --dry` mo tay song song voi
+            # service se doc cung hang lenh va chay moi lenh hai lan.
+            asyncio.create_task(loop_remote(st, ck)),
             asyncio.create_task(Callbacks(
                 DB, refresh_one,
                 lambda h, kind, detail: build_view(h, kind, None, detail),
