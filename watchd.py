@@ -53,6 +53,7 @@ import config
 import positions
 import quotes
 import render_watch
+import useralerts
 import watch
 import watchlist
 
@@ -327,6 +328,27 @@ async def run(args, lg: logging.Logger) -> int:
 
     ctx: dict = {"day": "", "rows": [], "gate": {}, "pos": None, "warn": []}
     fail = 0
+
+    # Canh bao CUA NGUOI DUNG (watchlist tren web, xem useralerts.py): mot vong
+    # rieng, vi no theo gio cua ba thi truong chu khong theo phien NYSE. Mot loi
+    # o day ghi log roi vong sau chay tiep - no khong bao gio duoc keo Tier 1
+    # (canh cat lo) chet theo.
+    ua = useralerts.Runner(g, lg, args.dry)
+
+    async def user_loop() -> None:
+        while True:
+            try:
+                r = await ua.step(c, prov, send, dt.datetime.now(dt.UTC))
+                if r["n_sym"]:
+                    lg.info(f"useralerts: mo {','.join(r['open'])} · "
+                            f"{r['n_sym']} ma · {r['cands']} moi · gui "
+                            f"{r['sent']} · bo qua {r['skip']}")
+            except Exception as e:                               # noqa: BLE001
+                lg.error(f"useralerts: {type(e).__name__}: {e}")
+            if not await nap(60):
+                return
+
+    ut = asyncio.create_task(user_loop())
     lg.info(f"watchd: bat dau · nguon {prov.name} · "
             f"{'CHAY THU (khong gui)' if args.dry else 'gui that'}")
     try:
@@ -403,6 +425,7 @@ async def run(args, lg: logging.Logger) -> int:
             pass
         return 1
     finally:
+        ut.cancel()
         c.close()
 
 
