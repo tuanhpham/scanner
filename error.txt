@@ -808,3 +808,68 @@ passed" — con số đó nay đã cũ, đọc là 778.
 
 Trên VM `.env` CÓ token, nên đây chính là cái máy mà hai test kia đỏ. Sau
 `git pull` phải thấy 778 passed, không còn 2 failed.
+
+================================================================================
+CẢNH BÁO TELEGRAM THEO WATCHLIST CỦA WEB — useralerts.py trong watchd (2026-10-02)
+================================================================================
+
+Code: scanner 1da6875 + web 8fc98027 (nhật ký CHAT-72 trong lux-lookthrough/error.txt,
+các bước ALERT-1..3 ở đó cũng chính là các bước dưới đây).
+
+Người dùng chọn trên tab Watchlist của web: danh sách nào cảnh báo và báo gì (mức
+giá từng mã, khối lượng bất thường, biến động so với giá đóng cửa hôm qua). Web
+đẩy quy tắc lên khoá `scanner:alerts` (chỉ web ghi được). `watchd.py` chạy
+`useralerts.Runner.step()` mỗi 60 giây trong task `user_loop`, đọc lại quy tắc
+5 phút một lần, chỉ lấy giá của mã thuộc thị trường ĐANG MỞ (Mỹ, Đức/EU, Việt
+Nam), rồi trả trạng thái về khoá `scanner:alerts_seen`.
+
+Không đụng Tier 1: bảng riêng `user_alert` trong baseline.db, không chạm
+cooldown, trần Tier 2 hay tổng kết phiên. Không gọi getUpdates, không mở
+`main.py` thứ hai.
+
+--- File nào đổi ---
+
+  useralerts.py                MỚI — luật, phiên thị trường, DB, tin nhắn, Runner
+  watchd.py                    tạo task user_loop, huỷ nó trong finally
+  tests/test_useralerts.py     MỚI — 12 test
+
+--- Kiểm (máy dev) ---
+
+  python -m pytest -q                                    805 passed
+  python watchd.py --selftest                            smoke ok
+
+--- Triển khai ---
+
+1. Web TRƯỚC (máy không bị chặn wrangler, Git Bash, từ thư mục Github):
+
+    cd lux-lookthrough && git pull
+    cd screener-ts && npm install && npm run build
+    cd apps/desktop
+    npx wrangler pages deploy dist --project-name the-professional
+
+   Function phải deploy thì web mới ghi được `scanner:alerts`.
+
+2. TRÊN VM (SSH, user ubuntu). Nút "Cập nhật code" trên web KHÔNG khởi động lại
+   watchd — phải restart tay một lần:
+
+    cd ~/scanner && git pull
+    .venv/bin/python -m pytest -q tests/test_useralerts.py   # phải 12 passed
+    sudo systemctl restart watchd
+    systemctl status watchd --no-pager | head -15
+
+   Test fail thì KHÔNG restart. KHÔNG đụng unit `scanner` / `main.py`.
+
+3. Trên web (phải bật đồng bộ ☁️): tab Watchlist > "Cảnh báo Telegram", bật
+   danh sách, chọn loại, gõ mức giá. Trong ~5 phút mục "VM báo lại" phải hiện giờ.
+   Không thấy gì:
+
+    grep useralerts ~/scanner/state/watchd.log | tail -20
+
+--- Hằng số đổi được (useralerts.py) ---
+
+  REFRESH_SEC=300      đọc lại quy tắc
+  VOL_MUTE_MIN=15      không báo khối lượng trong 15 phút đầu phiên
+  ADV_DAYS=20          số phiên lấy trung bình khối lượng
+  MAX_SYMS=120         tối đa số mã
+  Ngưỡng khối lượng (mặc định ×2) và biến động (mặc định ±4%) chỉnh trên web,
+  theo từng danh sách. Mỗi quy tắc báo tối đa 1 lần/mã/ngày; đổi mức giá thì báo lại.
