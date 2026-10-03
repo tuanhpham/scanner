@@ -640,10 +640,16 @@ Khi dùng phễu swing buổi sáng (mục 12), dòng 08:00 đổi thành **mộ
 
 ```cron
 CRON_TZ=America/New_York
-0 8 * * 1-5  cd /home/ubuntu/scanner && .venv/bin/python nightly.py >> state/prep.log 2>&1
+0 8 * * 2-6  cd /home/ubuntu/scanner && .venv/bin/python nightly.py >> state/prep.log 2>&1
 0 9 * * 1-5  cd /home/ubuntu/scanner && .venv/bin/python scripts/mark_etf.py >> state/prep.log 2>&1
 5 9 * * 1-5  /usr/bin/systemctl restart scanner
 ```
+
+`nightly.py` chạy **thứ Ba–thứ Bảy** (`2-6`), không phải `1-5`: mỗi sáng nó xử lý
+phiên đã đóng HÔM TRƯỚC, nên nến thứ Sáu được xử lý sáng thứ Bảy. Với `1-5` nến
+thứ Sáu nằm chờ tới 08:00 thứ Hai và cả cuối tuần trang Scanner chỉ có số của
+thứ Năm. Thứ Hai không có nến mới nào (Chủ nhật không có phiên) nên bỏ thứ Hai
+không mất gì. `push.py --all` lúc 08:30 cũng đổi theo sang `2-6`.
 
 Trước đó chỗ này là một chuỗi bốn lệnh nối bằng `&&`:
 
