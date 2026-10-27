@@ -75,25 +75,35 @@ def fetch_universe() -> dict[str, str]:
     from alpaca.trading.enums import AssetClass, AssetStatus
     from alpaca.trading.requests import GetAssetsRequest
 
-    tc = TradingClient(ALPACA_KEY, ALPACA_SECRET, paper=True)
+    # raw_data=True: tra ve list[dict] thay vi list[Asset]. Model Asset cua
+    # alpaca-py kiem `exchange` voi mot enum co dinh; Alpaca them mot san moi
+    # (10/2026, 9 ma) la TypeAdapter nem ValidationError va ca buoc "tai nen"
+    # cua nightly do. Ta chi can 3 truong nen doc chuoi tho.
+    tc = TradingClient(ALPACA_KEY, ALPACA_SECRET, paper=True, raw_data=True)
     assets = tc.get_all_assets(GetAssetsRequest(
         asset_class=AssetClass.US_EQUITY, status=AssetStatus.ACTIVE))
     ok_ex = {"NASDAQ", "NYSE", "AMEX", "ARCA"}
     out: dict[str, str] = {}
+    other: dict[str, int] = {}
     for a in assets:
-        if not a.tradable:
+        if not a.get("tradable"):
             continue
-        ex = str(a.exchange).split(".")[-1]
+        ex = str(a.get("exchange") or "").split(".")[-1].upper()
         if ex not in ok_ex:
+            other[ex] = other.get(ex, 0) + 1
             continue
-        s = a.symbol.upper()
+        s = str(a.get("symbol") or "").upper()
+        if not s:
+            continue
         if any(ch in s for ch in ".-/ ") or len(s) > 5:
             continue  # bo preferred / warrant / unit
         out[s] = ex
     out = {s: out[s] for s in sorted(out)}
     log(f"Universe Alpaca: {len(out)} ma "
         + " ".join(f"{e}={sum(1 for v in out.values() if v == e)}"
-                   for e in sorted(ok_ex)))
+                   for e in sorted(ok_ex))
+        + (" | bo qua: " + " ".join(f"{e or '?'}={n}" for e, n in sorted(other.items()))
+           if other else ""))
     return out
 
 
